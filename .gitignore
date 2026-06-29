@@ -1,0 +1,29 @@
+# Virtual Environment
+env/
+venv/
+.env
+
+# Python Cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Data (Raw, 2D Slices, Precomputed Features)
+data/
+
+# Results & Checkpoints
+results/
+*.pth
+*.pt
+
+# Large Zip File for Colab
+project_colab.zip
+
+# Jupyter Notebook Checkpoints
+.ipynb_checkpoints/
+
+# IDE & OS Files
+.vscode/
+.idea/
+.DS_Store
