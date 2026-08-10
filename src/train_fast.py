@@ -12,25 +12,64 @@ Cach chay:
 """
 
 import os
+import sys
 import argparse
 import json
 import time
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader
 from tqdm import tqdm
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.abspath("src"))
 
 from model import SegmentationDecoder
 from train import dice_score, iou_score
 
 
 # ────────────────────────────────────────────────────────────
-# Dataset cho pre-computed features
+# Ham Loss: BCE + Dice Loss (Giai quyet mat can bang du lieu)
+# ────────────────────────────────────────────────────────────
+class DiceBCELoss(nn.Module):
+    """
+    Ket hop BCE Loss + Dice Loss.
+    - BCE Loss: Toi uu tung pixel (nhan biet diem pixel dung/sai).
+    - Dice Loss: Toi uu dien tich chong lap giua prediction va ground truth.
+      Khong bi anh huong boi mat can bang (class imbalance) nen xac dinh
+      chinh xac vung nho hon nhieu so voi chi dung BCE.
+
+    Cong thuc: L = bce_weight * L_bce + dice_weight * L_dice
+    """
+    def __init__(self, bce_weight=0.5, dice_weight=0.5, smooth=1e-6):
+        super().__init__()
+        self.bce_weight = bce_weight
+        self.dice_weight = dice_weight
+        self.smooth = smooth
+        self.bce = nn.BCEWithLogitsLoss()
+
+    def forward(self, logits, targets):
+        # Tinh BCE Loss
+        bce_loss = self.bce(logits, targets)
+
+        # Tinh Dice Loss
+        probs = torch.sigmoid(logits)
+        intersection = (probs * targets).sum(dim=(2, 3))
+        union = probs.sum(dim=(2, 3)) + targets.sum(dim=(2, 3))
+        dice = (2.0 * intersection + self.smooth) / (union + self.smooth)
+        dice_loss = 1.0 - dice.mean()
+
+        return self.bce_weight * bce_loss + self.dice_weight * dice_loss
+
+
+# ────────────────────────────────────────────────────────────
+# Dataset cho pre-computed features (Doc truc tiep tu SSD)
 # ────────────────────────────────────────────────────────────
 class PrecomputedDataset(Dataset):
     """
     Dataset doc truc tiep features (.pt) da duoc trich xuat boi DINOv2.
-    Khong can chay encoder nua -> rat nhanh.
+    Doc truc tiep tu SSD (/content/data) cuc ky nhanh va on dinh tuyet doi.
     """
 
     def __init__(self, data_dir):
@@ -50,11 +89,36 @@ class PrecomputedDataset(Dataset):
         return feat, mask, fname
 
 
-def get_fast_dataloaders(data_root="data", batch_size=32, num_workers=2):
-    """Tao DataLoader tu pre-computed features."""
-    precomp_dir = os.path.join(data_root, "precomputed")
-    loaders = {}
+def get_fast_dataloaders(data_root="data", batch_size=32, num_workers=2, model_name="vit_small", device=None, mode_2_5d=False):
+    """Tao DataLoader tu pre-computed features (tu dong trich xuat neu chua co)."""
+    # Luu features vao thu muc rieng cho moi che do: precomputed hoac precomputed_2_5d
+    subfolder = "precomputed_2_5d" if mode_2_5d else "precomputed"
+    precomp_dir = os.path.join(data_root, subfolder)
 
+    # Kiem tra xem da co du lieu precomputed chua
+    train_feat_dir = os.path.join(precomp_dir, "train", "features")
+    needs_extract = not os.path.exists(train_feat_dir) or len([f for f in os.listdir(train_feat_dir) if f.endswith(".pt")]) == 0
+
+    if needs_extract:
+        mode_label = "2.5D" if mode_2_5d else "2D"
+        print(f"\n[*] Du lieu precomputed {mode_label} chua co hoac bi trong!")
+        print("[*] Dang tu dong chay trich xuat features (chi mat ~45s tren GPU)...")
+        from extract_features import extract_and_save
+        from model import DINOv2Encoder
+        from dataset import get_dataloaders as get_raw_loaders
+
+        dev = device if device is not None else torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        encoder = DINOv2Encoder(model_name=model_name).to(dev)
+        # Truyen mode_2_5d vao de doc anh theo che do phu hop
+        raw_loaders = get_raw_loaders(data_root=data_root, batch_size=16, num_workers=0, mode_2_5d=mode_2_5d)
+
+        for split_name, raw_loader in raw_loaders.items():
+            out_dir = os.path.join(precomp_dir, split_name)
+            count = extract_and_save(encoder, raw_loader, out_dir, dev)
+            print(f"  -> Da trich xuat {count} samples cho tap [{split_name}]")
+        print("[*] Trich xuat features hoan tat! Tiep tuc huan luyen...\n")
+
+    loaders = {}
     for split, shuffle in [("train", True), ("val", False), ("test", False)]:
         split_dir = os.path.join(precomp_dir, split)
         if not os.path.exists(os.path.join(split_dir, "features")):
@@ -62,16 +126,21 @@ def get_fast_dataloaders(data_root="data", batch_size=32, num_workers=2):
             continue
 
         dataset = PrecomputedDataset(split_dir)
+        if len(dataset) == 0:
+            print(f"  [CANH BAO] {split_dir} co 0 samples. Bo qua.")
+            continue
+
+        # Voi In-Memory Dataset, num_workers=0 la lua chon toi uu va an toan nhat tren Colab
         loader = DataLoader(
             dataset,
             batch_size=batch_size,
             shuffle=shuffle,
-            num_workers=num_workers,
+            num_workers=0,
             pin_memory=True,
             drop_last=(split == "train"),
         )
         loaders[split] = loader
-        print(f"  [{split}] {len(dataset)} samples, {len(loader)} batches")
+        print(f"  [{split}] {len(dataset)} samples, {len(loader)} batches", flush=True)
 
     return loaders
 
@@ -138,19 +207,23 @@ EMBED_DIMS = {"vit_small": 384, "vit_base": 768, "vit_large": 1024}
 
 
 def main(args):
+    mode_label = "2.5D" if args.mode_2_5d else "2D"
     print("=" * 60)
-    print("HUAN LUYEN NHANH (PRE-COMPUTED FEATURES)")
+    print(f"HUAN LUYEN NHANH (PRE-COMPUTED FEATURES) - Che do {mode_label}")
     print("=" * 60)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"\nDevice: {device}")
 
     # DataLoaders
-    print(f"\nTai pre-computed features (batch_size={args.batch_size})...")
+    print(f"\nTai pre-computed features [{mode_label}] (batch_size={args.batch_size})...")
     loaders = get_fast_dataloaders(
         data_root=args.data_root,
         batch_size=args.batch_size,
         num_workers=args.num_workers,
+        model_name=args.model,
+        device=device,
+        mode_2_5d=args.mode_2_5d,
     )
 
     if "train" not in loaders or "val" not in loaders:
@@ -164,11 +237,21 @@ def main(args):
     num_params = sum(p.numel() for p in decoder.parameters())
     print(f"  Tham so decoder: {num_params:,}")
 
-    criterion = nn.BCEWithLogitsLoss()
+    if args.loss == "bce_dice":
+        criterion = DiceBCELoss(bce_weight=0.5, dice_weight=0.5)
+        print(f"  Ham loss: BCE + Dice Loss (bce=0.5, dice=0.5)")
+    else:
+        criterion = nn.BCEWithLogitsLoss()
+        print(f"  Ham loss: BCE Loss (baseline)")
     optimizer = torch.optim.Adam(decoder.parameters(), lr=args.lr)
 
     os.makedirs(args.save_dir, exist_ok=True)
-    best_ckpt_path = os.path.join(args.save_dir, "best_decoder.pth")
+    # Ten checkpoint phan biet ca loss va che do 2D/2.5D
+    suffix = f"_{args.loss}"
+    if args.mode_2_5d:
+        suffix += "_2_5d"
+    ckpt_name = f"best_decoder{suffix}.pth"
+    best_ckpt_path = os.path.join(args.save_dir, ckpt_name)
 
     best_val_dice = 0.0
     patience_counter = 0
@@ -250,5 +333,10 @@ if __name__ == "__main__":
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--patience", type=int, default=7)
     parser.add_argument("--num_workers", type=int, default=2)
+    parser.add_argument("--loss", type=str, default="bce",
+                        choices=["bce", "bce_dice"],
+                        help="Ham loss: bce (baseline) hoac bce_dice (cai tien)")
+    parser.add_argument("--mode_2_5d", action="store_true", default=False,
+                        help="Bat che do dau vao 2.5D: ghep [z-1, z, z+1] vao 3 kenh RGB")
     args = parser.parse_args()
     main(args)

@@ -16,6 +16,7 @@ Cách chạy:
 """
 
 import os
+import sys
 import argparse
 import json
 import numpy as np
@@ -24,6 +25,16 @@ matplotlib.use("Agg")  # Không cần GUI
 import matplotlib.pyplot as plt
 import torch
 from tqdm import tqdm
+from scipy import ndimage
+
+# Đảm bảo luôn tìm thấy các module trong src/
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.abspath("src"))
+
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
 from dataset import get_dataloaders, IMAGENET_MEAN, IMAGENET_STD
 from model import DINOv2Segmenter
@@ -137,10 +148,38 @@ def plot_training_history(history_path, save_dir):
 
 
 # ────────────────────────────────────────────────────────────
+# ────────────────────────────────────────────────────────────
+# Post-processing: Largest Connected Component (LCC)
+# ────────────────────────────────────────────────────────────
+def apply_lcc(pred_np):
+    """
+    Giữ lại duy nhất thành phần liên thông lớn nhất trong mặt nạ nhị phân.
+    Loại bỏ các đốm nhiễu nhỏ rải rác nằm ngoài vùng tâm nhĩ trái.
+
+    Args:
+        pred_np: numpy array (H, W) nhị phân {0, 1}
+    Returns:
+        lcc_mask: numpy array (H, W) nhị phân chỉ giữ thành phần lớn nhất
+    """
+    if pred_np.sum() == 0:
+        return pred_np  # Không có vùng dự đoán → trả về nguyên
+
+    labeled, num_features = ndimage.label(pred_np)
+    if num_features == 0:
+        return pred_np
+
+    # Tìm thành phần lớn nhất (bỏ qua nhãn 0 là nền)
+    component_sizes = ndimage.sum(pred_np, labeled, range(1, num_features + 1))
+    largest_label = np.argmax(component_sizes) + 1
+    lcc_mask = (labeled == largest_label).astype(np.float32)
+    return lcc_mask
+
+
+# ────────────────────────────────────────────────────────────
 # Evaluation
 # ────────────────────────────────────────────────────────────
 @torch.no_grad()
-def evaluate_model(model, loader, device, vis_dir, max_vis=20):
+def evaluate_model(model, loader, device, vis_dir, max_vis=20, use_lcc=False):
     """
     Đánh giá mô hình trên toàn bộ tập dữ liệu.
 
@@ -157,11 +196,12 @@ def evaluate_model(model, loader, device, vis_dir, max_vis=20):
     model.eval()
     os.makedirs(vis_dir, exist_ok=True)
 
+    lcc_label = " +LCC" if use_lcc else ""   # Nhãn hiển thị trên thanh tiến trình
     all_dice = []
-    all_iou = []
-    vis_count = 0
+    all_iou  = []
+    records = []
 
-    for images, masks, fnames in tqdm(loader, desc="  Evaluating"):
+    for images, masks, fnames in tqdm(loader, desc=f"  Evaluating{lcc_label}"):
         images = images.to(device)
         masks = masks.to(device)
 
@@ -173,24 +213,52 @@ def evaluate_model(model, loader, device, vis_dir, max_vis=20):
             pred_i = preds[i]    # (1, H, W)
             mask_i = masks[i]    # (1, H, W)
 
-            d = dice_score(pred_i, mask_i)
-            j = iou_score(pred_i, mask_i)
+            pred_np = pred_i.squeeze().cpu().numpy()
+
+            # --- Áp dụng hậu xử lý LCC (nếu được bật) ---
+            if use_lcc:
+                pred_np = apply_lcc(pred_np)
+                pred_i = torch.from_numpy(pred_np).unsqueeze(0).to(device)
+
+            d = float(dice_score(pred_i, mask_i))
+            j = float(iou_score(pred_i, mask_i))
             all_dice.append(d)
             all_iou.append(j)
 
-            # Trực quan hoá một số sample
-            if vis_count < max_vis:
-                img_np = denormalize(images[i])
-                # Chuyển sang grayscale để hiển thị
-                img_gray = np.mean(img_np, axis=2)
-                gt_np = mask_i.squeeze().cpu().numpy()
-                pred_np = pred_i.squeeze().cpu().numpy()
+            img_np = denormalize(images[i])
+            img_gray = np.mean(img_np, axis=2)
+            gt_np = mask_i.squeeze().cpu().numpy()
 
-                save_path = os.path.join(vis_dir, f"vis_{vis_count:03d}_{fnames[i]}")
-                visualize_prediction(
-                    img_gray, gt_np, pred_np, fnames[i], d, j, save_path
-                )
-                vis_count += 1
+            records.append({
+                "img_gray": img_gray,
+                "gt_np": gt_np,
+                "pred_np": pred_np,
+                "fname": fnames[i],
+                "dice": d,
+                "iou": j
+            })
+
+    # Lưu trực quan hóa thông minh: Top đẹp nhất (Dice cao nhất) + Đại diện
+    if records and max_vis > 0:
+        # Sắp xếp theo Dice từ cao xuống thấp
+        sorted_records = sorted(records, key=lambda x: x["dice"], reverse=True)
+        
+        # Chọn top đẹp nhất (chiếm 60% số ảnh lưu), trung bình (20%) và biên (20%)
+        n_best = min(int(max_vis * 0.6), len(sorted_records))
+        n_med = min(int(max_vis * 0.2), len(sorted_records) - n_best)
+        
+        selected = sorted_records[:n_best]
+        if n_med > 0:
+            mid_idx = len(sorted_records) // 2
+            selected.extend(sorted_records[mid_idx : mid_idx + n_med])
+        
+        # Lưu các ảnh đã chọn
+        for idx, item in enumerate(selected):
+            save_name = f"vis_{idx+1:02d}_dice_{item['dice']:.4f}_{item['fname']}"
+            save_path = os.path.join(vis_dir, save_name)
+            visualize_prediction(
+                item["img_gray"], item["gt_np"], item["pred_np"], item["fname"], item["dice"], item["iou"], save_path
+            )
 
     return all_dice, all_iou
 
@@ -225,12 +293,18 @@ def main(args):
         print(f"CẢNH BÁO: Không tìm thấy checkpoint tại {args.checkpoint}")
         print("Sử dụng mô hình chưa huấn luyện (chỉ để test).")
 
+    # Tự động nhận diện chế độ 2.5D từ checkpoint hoặc cờ CLI
+    is_2_5d = args.mode_2_5d or ("2_5d" in args.checkpoint)
+    mode_label = "2.5D" if is_2_5d else "2D"
+    print(f"Chế độ dữ liệu test: {mode_label}")
+
     # DataLoader
-    print(f"\nTải dữ liệu test...")
+    print(f"\nTải dữ liệu test ({mode_label})...")
     loaders = get_dataloaders(
         data_root=args.data_root,
         batch_size=args.batch_size,
         num_workers=args.num_workers,
+        mode_2_5d=is_2_5d,
     )
 
     if "test" not in loaders:
@@ -238,14 +312,19 @@ def main(args):
         return
 
     # Đánh giá
-    vis_dir = os.path.join(args.save_dir, "visualizations")
+    vis_suffix = "_2_5d" if is_2_5d else ""
+    if args.use_lcc:
+        vis_suffix += "_lcc"
+    vis_dir = os.path.join(args.save_dir, f"visualizations{vis_suffix}")
+    use_lcc = args.use_lcc
+    print(f"\nHậu xử lý LCC: {'Bật' if use_lcc else 'Tắt'}")
     all_dice, all_iou = evaluate_model(
-        model, loaders["test"], device, vis_dir, max_vis=args.max_vis
+        model, loaders["test"], device, vis_dir, max_vis=args.max_vis, use_lcc=use_lcc
     )
 
     # Kết quả
     print("\n" + "=" * 60)
-    print("KẾT QUẢ TRÊN TẬP TEST:")
+    print(f"KẾT QUẢ TRÊN TẬP TEST [{mode_label}]:")
     print(f"  Số lượng samples: {len(all_dice)}")
     print(f"  Dice Score:")
     print(f"    Mean:   {np.mean(all_dice):.4f}")
@@ -259,8 +338,13 @@ def main(args):
     print(f"    Max:    {np.max(all_iou):.4f}")
 
     # Lưu kết quả ra JSON
+    ckpt_basename = os.path.splitext(os.path.basename(args.checkpoint))[0]
+    lcc_tag = "_lcc" if args.use_lcc else ""
     results = {
+        "checkpoint": args.checkpoint,
+        "mode_2_5d": is_2_5d,
         "num_samples": len(all_dice),
+        "use_lcc": args.use_lcc,
         "dice_mean": float(np.mean(all_dice)),
         "dice_std": float(np.std(all_dice)),
         "dice_min": float(np.min(all_dice)),
@@ -272,7 +356,7 @@ def main(args):
         "per_sample_dice": all_dice,
         "per_sample_iou": all_iou,
     }
-    results_path = os.path.join(args.save_dir, "test_results.json")
+    results_path = os.path.join(args.save_dir, f"test_results_{ckpt_basename}{lcc_tag}.json")
     with open(results_path, "w", encoding="utf-8") as f:
         json.dump(results, f, indent=2)
     print(f"\n  Kết quả chi tiết: {results_path}")
@@ -304,5 +388,9 @@ if __name__ == "__main__":
                         help="Số worker cho DataLoader")
     parser.add_argument("--max_vis", type=int, default=20,
                         help="Số hình ảnh trực quan tối đa")
+    parser.add_argument("--use_lcc", action="store_true", default=False,
+                        help="Bật hậu xử lý Largest Connected Component")
+    parser.add_argument("--mode_2_5d", action="store_true", default=False,
+                        help="Bật chế độ đầu vào 2.5D (tự động bật nếu checkpoint chứa '2_5d')")
     args = parser.parse_args()
     main(args)

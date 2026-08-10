@@ -23,7 +23,11 @@ project_colab.zip
 # Jupyter Notebook Checkpoints
 .ipynb_checkpoints/
 
+# Empty dirs tracked for structure only
+notebooks/src/
+
 # IDE & OS Files
 .vscode/
 .idea/
 .DS_Store
+Thumbs.db
