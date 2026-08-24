@@ -38,13 +38,43 @@ from train_fast import DiceBCELoss
 from lora import inject_lora_into_backbone, get_lora_parameters
 
 
+def set_seed(seed: int):
+    import random, numpy as np
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+
+
+# ────────────────────────────────────────────────────────────
+def check_lora_gradients(model):
+    """
+    Kiểm tra bắt buộc: LoRA phải nhận được gradient sau backward.
+    Nếu không có gradient, kết quả không hợp lệ (theo yêu cầu thực nghiệm).
+    """
+    issues = []
+    for name, param in model.named_parameters():
+        if "lora_A" in name or "lora_B" in name:
+            if param.grad is None:
+                issues.append(name)
+    if issues:
+        raise RuntimeError(
+            f"LoRA không nhận được gradient! Các tham số lỗi:\n"
+            + "\n".join(f"  - {n}" for n in issues)
+            + "\nKiểm tra lại: LoRA forward không được đặt trong torch.no_grad()"
+        )
+    print("  [OK] Tất cả tham số LoRA đều nhận được gradient.")
+
+
 # ────────────────────────────────────────────────────────────
 # Training loop với PyTorch Mixed Precision (AMP FP16 siêu tốc)
 # ────────────────────────────────────────────────────────────
-def train_one_epoch_lora(model, loader, criterion, optimizer, scaler, device):
+def train_one_epoch_lora(model, loader, criterion, optimizer, scaler, device,
+                        check_grad_epoch1=False):
     """
     Huấn luyện 1 epoch với LoRA kết hợp Mixed Precision (AMP).
-    Tăng tốc độ gấp 3 lần trên GPU T4 của Colab!
+    check_grad_epoch1: Nếu True, kiểm tra gradient LoRA sau batch đầu tiên.
     """
     model.train()
     # Giữ encoder.backbone ở eval() để BatchNorm không bị nhiễu
@@ -54,6 +84,7 @@ def train_one_epoch_lora(model, loader, criterion, optimizer, scaler, device):
     total_dice = 0.0
     total_iou = 0.0
     num_batches = 0
+    grad_checked = False
 
     pbar = tqdm(loader, desc="  Train", leave=False)
     for images, masks, _ in pbar:
@@ -69,6 +100,13 @@ def train_one_epoch_lora(model, loader, criterion, optimizer, scaler, device):
 
         # Scaled Backward (chống underflow gradient trong FP16)
         scaler.scale(loss).backward()
+
+        # Kiểm tra gradient LoRA sau backward đầu tiên (theo yêu cầu)
+        if check_grad_epoch1 and not grad_checked:
+            scaler.unscale_(optimizer)  # unscale để kiểm tra grad đúng
+            check_lora_gradients(model)
+            grad_checked = True
+
         scaler.step(optimizer)
         scaler.update()
 
@@ -115,13 +153,15 @@ def validate_lora(model, loader, criterion, device):
 # ────────────────────────────────────────────────────────────
 def main(args):
     print("=" * 60)
-    print(f"MUC 2: LoRA FINE-TUNING ENCODER (DINOv2 + LoRA rank={args.lora_rank})")
+    print(f"E4: LoRA FINE-TUNING ENCODER | rank={args.lora_rank} | seed={args.seed}")
     print("=" * 60)
 
+    set_seed(args.seed)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"\nDevice: {device}")
     if device.type == "cuda":
         print(f"  GPU: {torch.cuda.get_device_name(0)}")
+        torch.cuda.reset_peak_memory_stats()
 
     # DataLoaders (dùng ảnh gốc, không phải precomputed features)
     print(f"\nTai du lieu goc (batch_size={args.batch_size})...")
@@ -179,7 +219,7 @@ def main(args):
 
     # Checkpoint path
     os.makedirs(args.save_dir, exist_ok=True)
-    ckpt_name = f"best_decoder_vit_small_bce_dice_lora.pth"
+    ckpt_name = f"best_lora_seed{args.seed}.pth"
     best_ckpt_path = os.path.join(args.save_dir, ckpt_name)
     print(f"  Checkpoint se luu tai: {best_ckpt_path}")
 
@@ -196,12 +236,14 @@ def main(args):
 
     print(f"\nBat dau huan luyen ({args.epochs} epochs, patience={args.patience})...")
     print("-" * 70)
+    train_start_time = time.time()
 
     for epoch in range(1, args.epochs + 1):
         t0 = time.time()
 
         train_loss, train_dice, train_iou = train_one_epoch_lora(
-            model, loaders["train"], criterion, optimizer, scaler, device
+            model, loaders["train"], criterion, optimizer, scaler, device,
+            check_grad_epoch1=(epoch == 1),   # Kiểm tra gradient LoRA ở epoch 1
         )
         val_loss, val_dice, val_iou = validate_lora(
             model, loaders["val"], criterion, device
@@ -244,16 +286,58 @@ def main(args):
                 print(f"\n  Early stopping sau {args.patience} epoch khong cai thien.")
                 break
 
-    # Lưu history (riêng cho LoRA để không ghi đè lịch sử Mục 1)
-    history_path = os.path.join(args.save_dir, "training_history_lora.json")
+    total_train_time = time.time() - train_start_time
+
+    # Đo VRAM peak
+    vram_gb = 0.0
+    if device.type == "cuda":
+        vram_gb = torch.cuda.max_memory_allocated() / 1e9
+
+    # Đo inference time
+    total_params     = sum(p.numel() for p in model.parameters())
+    trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    model.eval()
+    dummy = torch.randn(1, 3, 448, 448).to(device)
+    if device.type == "cuda":
+        torch.cuda.synchronize()
+    t_inf = time.time()
+    with torch.no_grad():
+        for _ in range(50):
+            _ = model(dummy)
+    if device.type == "cuda":
+        torch.cuda.synchronize()
+    inference_ms = (time.time() - t_inf) / 50 * 1000
+
+    # Lưu history
+    history_path = os.path.join(args.save_dir, f"history_lora_seed{args.seed}.json")
     with open(history_path, "w") as f:
         json.dump(history, f, indent=2)
 
+    # Lưu efficiency metrics
+    efficiency = {
+        "method": "E4_LoRA",
+        "seed": args.seed,
+        "lora_blocks": args.lora_blocks,
+        "lora_rank": args.lora_rank,
+        "total_params": total_params,
+        "trainable_params": trainable_params,
+        "trainable_ratio": round(trainable_params / total_params * 100, 4),
+        "best_val_dice": round(best_val_dice, 4),
+        "vram_gb": round(vram_gb, 3),
+        "total_train_time_s": round(total_train_time, 1),
+        "inference_ms_per_image": round(inference_ms, 2),
+        "checkpoint": best_ckpt_path,
+    }
+    eff_path = os.path.join(args.save_dir, f"efficiency_lora_seed{args.seed}.json")
+    with open(eff_path, "w") as f:
+        json.dump(efficiency, f, indent=2)
+
     print(f"\n{'=' * 60}")
-    print(f"HOAN TAT!")
+    print(f"HOAN TAT E4 LoRA (seed={args.seed})")
     print(f"  Best Val Dice: {best_val_dice:.4f}")
-    print(f"  Checkpoint:    {best_ckpt_path}")
-    print(f"  History:       {history_path}")
+    print(f"  VRAM peak:     {vram_gb:.2f} GB")
+    print(f"  Train time:    {total_train_time/60:.1f} min")
+    print(f"  Inference:     {inference_ms:.1f} ms/image")
     print("=" * 60)
 
 
@@ -279,5 +363,7 @@ if __name__ == "__main__":
                         help="Hang cua ma tran LoRA (khuyen nghi: 4 hoac 8)")
     parser.add_argument("--lora_alpha", type=float, default=4.0,
                         help="He so scale LoRA (thuong bang rank)")
+    parser.add_argument("--seed", type=int, default=42,
+                        help="Random seed (42, 2026, 3407)")
     args = parser.parse_args()
     main(args)
