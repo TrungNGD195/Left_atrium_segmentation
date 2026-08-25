@@ -126,7 +126,7 @@ tmux new -s la-e2
 .venv/bin/python src/train_full_ft.py --model vit_large --epochs 1 --batch_size 1 --num_workers 4 --data_root data --save_dir results/vit_large/e2 2>&1 | tee logs/la-e2-smoke.log
 ~~~
 
-Detach tmux bằng Ctrl+B, sau đó D; quay lại bằng tmux attach -t la-e1 hoặc tmux attach -t la-e2.
+Detach tmux bằng Ctrl+B, sau đó D; quay lại bằng tmux attach -t la-e1 hoặc tmux attach -t la-e2. Nếu server không có tmux nhưng có screen, runner tự fallback sang screen; attach bằng screen -r la-e0-e2-smoke.
 
 Checkpoint ViT-Small không tương thích với ViT-Large; chỉ evaluate checkpoint được train bằng --model vit_large.
 
