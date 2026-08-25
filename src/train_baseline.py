@@ -31,6 +31,7 @@ sys.path.insert(0, os.path.abspath("src"))
 from model import DINOv2Segmenter
 from dataset import get_dataloaders
 from metrics import dice_score, iou_score, DiceBCELoss
+from checkpointing import atomic_json_dump, atomic_torch_save, capture_rng_state, restore_rng_state
 
 
 def set_seed(seed: int):
@@ -143,20 +144,43 @@ def main(args):
 
     # ── Training loop ─────────────────────────────────────────
     os.makedirs(args.save_dir, exist_ok=True)
-    ckpt_path = os.path.join(args.save_dir, f"best_{exp_tag}_seed{args.seed}.pth")
+    checkpoint_dir = os.path.join(args.save_dir, "checkpoints")
+    best_path = os.path.join(checkpoint_dir, "best.pth")
+    last_path = os.path.join(checkpoint_dir, "last.pth")
+    final_path = os.path.join(checkpoint_dir, "final.pth")
+    history_path = os.path.join(args.save_dir, "training_history.json")
 
-    best_val_dice = 0.0
+    best_val_dice = -1.0
+    best_val_iou = 0.0
     patience_counter = 0
-    history = {"train_loss": [], "train_dice": [], "val_loss": [], "val_dice": []}
+    history = {
+        "train_loss": [], "train_dice": [], "train_iou": [],
+        "val_loss": [], "val_dice": [], "val_iou": [],
+    }
+    start_epoch = 1
+
+    if args.resume:
+        resume_checkpoint = torch.load(args.resume, map_location=device, weights_only=False)
+        model.load_state_dict(resume_checkpoint["model_state_dict"])
+        optimizer.load_state_dict(resume_checkpoint["optimizer_state_dict"])
+        scaler.load_state_dict(resume_checkpoint["scaler_state_dict"])
+        best_val_dice = resume_checkpoint["best_val_dice"]
+        best_val_iou = resume_checkpoint["best_val_iou"]
+        patience_counter = resume_checkpoint["patience_counter"]
+        history = resume_checkpoint["history"]
+        restore_rng_state(resume_checkpoint.get("rng_state"))
+        start_epoch = resume_checkpoint["epoch"] + 1
+        print(f"Resuming from epoch {start_epoch} ({args.resume})")
 
     if device.type == "cuda":
         torch.cuda.reset_peak_memory_stats()
 
     train_start = time.time()
 
-    for epoch in range(1, args.epochs + 1):
+    checkpoint = None
+    for epoch in range(start_epoch, args.epochs + 1):
         t0 = time.time()
-        train_loss, train_dice, _ = train_one_epoch(
+        train_loss, train_dice, train_iou = train_one_epoch(
             model, loaders["train"], criterion, optimizer, scaler, device)
         val_loss, val_dice, val_iou = validate(
             model, loaders["val"], criterion, device)
@@ -164,30 +188,53 @@ def main(args):
 
         history["train_loss"].append(train_loss)
         history["train_dice"].append(train_dice)
+        history["train_iou"].append(train_iou)
         history["val_loss"].append(val_loss)
         history["val_dice"].append(val_dice)
+        history["val_iou"].append(val_iou)
 
         print(f"Epoch {epoch:02d}/{args.epochs} | "
-              f"T Loss:{train_loss:.4f} Dice:{train_dice:.4f} | "
-              f"V Loss:{val_loss:.4f} Dice:{val_dice:.4f} | {elapsed:.1f}s")
+              f"T Loss:{train_loss:.4f} Dice:{train_dice:.4f} IoU:{train_iou:.4f} | "
+              f"V Loss:{val_loss:.4f} Dice:{val_dice:.4f} IoU:{val_iou:.4f} | {elapsed:.1f}s")
 
         if val_dice > best_val_dice:
             best_val_dice = val_dice
+            best_val_iou = val_iou
             patience_counter = 0
-            torch.save({
-                "epoch": epoch,
-                "model_state_dict": model.state_dict(),
-                "val_dice": val_dice,
-                "val_iou": val_iou,
-                "config": exp_tag,
-                "seed": args.seed,
-            }, ckpt_path)
-            print(f"  -> Saved best (val_dice={val_dice:.4f})")
+            is_best = True
         else:
             patience_counter += 1
-            if patience_counter >= args.patience:
-                print(f"Early stopping at epoch {epoch}")
-                break
+            is_best = False
+
+        checkpoint = {
+            "epoch": epoch,
+            "model_state_dict": model.state_dict(),
+            "optimizer_state_dict": optimizer.state_dict(),
+            "scaler_state_dict": scaler.state_dict(),
+            "best_val_dice": best_val_dice,
+            "best_val_iou": best_val_iou,
+            "val_dice": val_dice,
+            "val_iou": val_iou,
+            "patience_counter": patience_counter,
+            "history": history,
+            "rng_state": capture_rng_state(),
+            "config": exp_tag,
+            "args": vars(args),
+            "seed": args.seed,
+        }
+        atomic_torch_save(checkpoint, last_path)
+        atomic_json_dump(history, history_path)
+        if epoch % args.checkpoint_every == 0:
+            atomic_torch_save(checkpoint, os.path.join(checkpoint_dir, f"epoch_{epoch:03d}.pth"))
+        if is_best:
+            atomic_torch_save(checkpoint, best_path)
+            print(f"  -> Saved best (val_dice={val_dice:.4f})")
+        if patience_counter >= args.patience:
+            print(f"Early stopping at epoch {epoch}")
+            break
+
+    if checkpoint is not None:
+        atomic_torch_save(checkpoint, final_path)
 
     total_train_time = time.time() - train_start
 
@@ -215,18 +262,19 @@ def main(args):
         "trainable_params": trainable_params,
         "trainable_ratio": round(trainable_params / total_params * 100, 2),
         "best_val_dice": round(best_val_dice, 4),
+        "best_val_iou": round(best_val_iou, 4),
         "vram_gb": round(vram_gb, 3),
         "total_train_time_s": round(total_train_time, 1),
         "inference_ms_per_image": round(inference_ms, 2),
-        "checkpoint": ckpt_path,
+        "checkpoint": best_path,
+        "last_checkpoint": last_path,
     }
     eff_path = os.path.join(args.save_dir, f"efficiency_{exp_tag}_seed{args.seed}.json")
     with open(eff_path, "w") as f:
         json.dump(efficiency, f, indent=2)
 
     hist_path = os.path.join(args.save_dir, f"history_{exp_tag}_seed{args.seed}.json")
-    with open(hist_path, "w") as f:
-        json.dump(history, f, indent=2)
+    atomic_json_dump(history, hist_path)
 
     print(f"\n{'='*60}")
     print(f"HOAN TAT {exp_tag} (seed={args.seed})")
@@ -248,6 +296,10 @@ if __name__ == "__main__":
     parser.add_argument("--patience",    type=int,   default=10)
     parser.add_argument("--num_workers", type=int,   default=0)
     parser.add_argument("--seed",        type=int,   default=42)
+    parser.add_argument("--resume",      type=str,   default=None,
+                        help="Path to a resumable last/epoch checkpoint")
+    parser.add_argument("--checkpoint_every", type=int, default=5,
+                        help="Keep an additional full snapshot every N epochs")
     parser.add_argument("--loss",        type=str,   default="bce",
                         choices=["bce", "bce_dice"],
                         help="bce = E0 baseline, bce_dice = E1")

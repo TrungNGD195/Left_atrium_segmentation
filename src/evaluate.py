@@ -199,6 +199,7 @@ def evaluate_model(model, loader, device, vis_dir, max_vis=20, use_lcc=False):
     lcc_label = " +LCC" if use_lcc else ""   # Nhãn hiển thị trên thanh tiến trình
     all_dice = []
     all_iou  = []
+    sample_metrics = []
     records = []
 
     for images, masks, fnames in tqdm(loader, desc=f"  Evaluating{lcc_label}"):
@@ -224,6 +225,7 @@ def evaluate_model(model, loader, device, vis_dir, max_vis=20, use_lcc=False):
             j = float(iou_score(pred_i, mask_i))
             all_dice.append(d)
             all_iou.append(j)
+            sample_metrics.append({"filename": fnames[i], "dice": d, "iou": j})
 
             img_np = denormalize(images[i])
             img_gray = np.mean(img_np, axis=2)
@@ -260,7 +262,7 @@ def evaluate_model(model, loader, device, vis_dir, max_vis=20, use_lcc=False):
                 item["img_gray"], item["gt_np"], item["pred_np"], item["fname"], item["dice"], item["iou"], save_path
             )
 
-    return all_dice, all_iou
+    return all_dice, all_iou, sample_metrics
 
 
 def main(args):
@@ -309,7 +311,7 @@ def main(args):
     # Đánh giá
     vis_dir = os.path.join(args.save_dir, "visualizations")
     use_lcc = args.use_lcc
-    all_dice, all_iou = evaluate_model(
+    all_dice, all_iou, sample_metrics = evaluate_model(
         model, loaders["test"], device, vis_dir, max_vis=args.max_vis, use_lcc=use_lcc
     )
 
@@ -334,8 +336,12 @@ def main(args):
     results = {
         "checkpoint": args.checkpoint,
         "num_samples": len(all_dice),
-        "num_samples": len(all_dice),
         "use_lcc": args.use_lcc,
+        "metric_protocol": {
+            "dice": "Dice coefficient; higher is better",
+            "jaccard_iou": "Jaccard/Intersection over Union; higher is better",
+            "summary": "mean and population standard deviation over test slices",
+        },
         "dice_mean": float(np.mean(all_dice)),
         "dice_std": float(np.std(all_dice)),
         "dice_min": float(np.min(all_dice)),
@@ -346,6 +352,7 @@ def main(args):
         "iou_max": float(np.max(all_iou)),
         "per_sample_dice": all_dice,
         "per_sample_iou": all_iou,
+        "per_sample_metrics": sample_metrics,
     }
     results_path = os.path.join(args.save_dir, f"test_results_{ckpt_basename}{lcc_tag}.json")
     with open(results_path, "w", encoding="utf-8") as f:
