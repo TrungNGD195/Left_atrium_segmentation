@@ -11,9 +11,9 @@ if [[ ! -x "$uv_bin" ]]; then
 fi
 
 if ! command -v tmux >/dev/null 2>&1; then
-    echo "tmux is required for persistent training sessions." >&2
+    echo "Warning: tmux is not installed; the environment can be prepared," >&2
+    echo "but persistent training sessions cannot start yet." >&2
     echo "Install it once with: sudo apt update && sudo apt install -y tmux" >&2
-    exit 1
 fi
 
 cd "$repo_root"
