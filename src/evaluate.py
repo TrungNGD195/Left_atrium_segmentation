@@ -12,7 +12,7 @@ Chức năng:
 
 Cách chạy:
     python evaluate.py
-    python evaluate.py --model vit_base --checkpoint results/best_model.pth
+    python evaluate.py --model vit_large --checkpoint results/best_model.pth
 """
 
 import os
@@ -364,7 +364,7 @@ def main(args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Evaluate DINOv2 LA Segmenter")
-    parser.add_argument("--model", type=str, default="vit_small",
+    parser.add_argument("--model", type=str, default="vit_large",
                         choices=["vit_small", "vit_base", "vit_large"],
                         help="Phiên bản DINOv2 ViT")
     parser.add_argument("--checkpoint", type=str, default="results/best_model.pth",

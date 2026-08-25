@@ -78,48 +78,63 @@ Thay vì 1 lát cắt, đưa 3 lát cắt liên tiếp [z-1, z, z+1] vào 3 kên
 
 ---
 
-## 🚀 Hướng dẫn chạy trên Google Colab
+## 🚀 Workflow ViT-Large: local → GitHub → server
 
-> **Yêu cầu:** Google Colab GPU T4 (miễn phí)
+GitHub origin/main là nguồn mã chuẩn. Chỉ sửa code tại máy local, commit/push lên GitHub; server chỉ pull fast-forward và chạy thí nghiệm. Không push trực tiếp vào server hoặc sửa code trong worktree server.
 
-### 1. Chuẩn bị dữ liệu (chạy 1 lần)
-```bash
-python src/prepare_data.py --data_dir data/raw --output_dir data
-```
+### 1. Đồng bộ mã
 
-### 2. Huấn luyện
+Tại local, trước khi push:
 
-**Mục 1 — Baseline BCE+Dice:**
-```bash
-python src/train_fast.py --data_root data --batch_size 64 --epochs 35 --lr 1e-3 --loss bce_dice --save_dir results
-```
+~~~bash
+git fetch origin
+git rebase origin/main
+git push origin main
+~~~
 
-**Mục 2 — LoRA Fine-tuning:**
-```bash
-python src/train_lora.py --data_root data --batch_size 32 --epochs 30 --lr_decoder 1e-3 --lr_lora 1e-5 --lora_blocks 2 --lora_rank 4 --save_dir results
-```
+Trên server, trong project:
 
-**Mục 3 — FPN Decoder:**
-```bash
-python src/train_fpn.py --data_root data --batch_size 32 --epochs 35 --lr 1e-3 --n_levels 4 --save_dir results
-```
+~~~bash
+bash scripts/sync_server.sh
+~~~
 
-### 3. Đánh giá
-```bash
-python src/evaluate.py --model vit_small --checkpoint results/best_decoder_vit_small_bce_dice_fpn.pth --data_root data
-```
+data/, results/, logs/, checkpoint .pth/.pt đều chỉ lưu trên server và bị Git ignore.
 
-> Xem đầy đủ trong `notebooks/colab_train.ipynb` để chạy từng bước trực quan.
+### 2. Cài môi trường server (một lần)
 
----
+~~~bash
+sudo apt update && sudo apt install -y tmux
+cd /mnt/data/users/trungptit/Left_atrium_segmentation
+bash scripts/bootstrap_server.sh
+~~~
 
-## 📦 Cài đặt
+Script tạo .venv, cài PyTorch 2.11 + CUDA 12.8, kiểm tra GPU CUDA và tạo logs/, results/vit_large/e1, results/vit_large/e2.
 
-```bash
-git clone https://github.com/TrungNGD195/Left_atrium_segmentation.git
-cd Left_atrium_segmentation
-pip install -r requirements.txt
-```
+### 3. Smoke test qua tmux
+
+Frozen BCE+Dice (E1, batch 8):
+
+~~~bash
+tmux new -s la-e1
+.venv/bin/python src/train_baseline.py --model vit_large --loss bce_dice --epochs 1 --batch_size 8 --num_workers 4 --data_root data --save_dir results/vit_large/e1 2>&1 | tee logs/la-e1-smoke.log
+~~~
+
+Full fine-tuning (E2, batch 1) chỉ chạy sau khi E1 thành công:
+
+~~~bash
+tmux new -s la-e2
+.venv/bin/python src/train_full_ft.py --model vit_large --epochs 1 --batch_size 1 --num_workers 4 --data_root data --save_dir results/vit_large/e2 2>&1 | tee logs/la-e2-smoke.log
+~~~
+
+Detach tmux bằng Ctrl+B, sau đó D; quay lại bằng tmux attach -t la-e1 hoặc tmux attach -t la-e2.
+
+Checkpoint ViT-Small không tương thích với ViT-Large; chỉ evaluate checkpoint được train bằng --model vit_large.
+
+### 4. Đánh giá
+
+~~~bash
+.venv/bin/python src/evaluate.py --model vit_large --checkpoint results/vit_large/e1/<checkpoint>.pth --data_root data --save_dir results/vit_large/e1
+~~~
 
 ---
 

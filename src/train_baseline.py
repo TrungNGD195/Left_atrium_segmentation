@@ -239,7 +239,7 @@ def main(args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="E0/E1: Frozen Encoder Baseline")
-    parser.add_argument("--model",       type=str,   default="vit_small")
+    parser.add_argument("--model",       type=str,   default="vit_large")
     parser.add_argument("--data_root",   type=str,   default="data")
     parser.add_argument("--save_dir",    type=str,   default="results")
     parser.add_argument("--epochs",      type=int,   default=50)

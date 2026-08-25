@@ -28,7 +28,7 @@ class DINOv2Encoder(nn.Module):
         "vit_giant": ("dinov2_vitg14", 1536),
     }
 
-    def __init__(self, model_name="vit_base"):
+    def __init__(self, model_name="vit_large"):
         super().__init__()
 
         if model_name not in self.MODEL_CONFIGS:
@@ -167,7 +167,7 @@ class DINOv2Segmenter(nn.Module):
     Mô hình hoàn chỉnh: DINOv2 Encoder (frozen) + Decoder (trainable).
     """
 
-    def __init__(self, model_name="vit_base"):
+    def __init__(self, model_name="vit_large"):
         super().__init__()
         self.encoder = DINOv2Encoder(model_name=model_name)
         self.decoder = SegmentationDecoder(
@@ -202,8 +202,8 @@ class DINOv2Segmenter(nn.Module):
 if __name__ == "__main__":
     print("Kiểm tra kiến trúc mô hình...")
 
-    model = DINOv2Segmenter(model_name="vit_small")
-    print(f"\nEncoder: DINOv2 ViT-Small (embed_dim={model.encoder.embed_dim})")
+    model = DINOv2Segmenter(model_name="vit_large")
+    print(f"\nEncoder: DINOv2 ViT-Large (embed_dim={model.encoder.embed_dim})")
     print(f"Tổng tham số:          {model.num_total_params():>12,}")
     print(f"Tham số huấn luyện:    {model.num_trainable_params():>12,}")
 
