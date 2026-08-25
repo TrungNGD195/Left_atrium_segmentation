@@ -22,8 +22,7 @@ sys.path.insert(0, os.path.abspath("src"))
 
 from model import DINOv2Segmenter
 from dataset import get_dataloaders
-from train import dice_score, iou_score
-from train_fast import DiceBCELoss
+from metrics import dice_score, iou_score, DiceBCELoss
 
 
 def set_seed(seed: int):

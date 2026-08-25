@@ -1,8 +1,8 @@
 """
 prepare_data.py
 ---------------
-Chuyển đổi dữ liệu MRI 3D (NIfTI) thành các lát cắt 2D (PNG)
-và chia thành tập Train / Val / Test theo tỷ lệ 70/10/20.
+Chuyển đổi dữ liệu MRI 3D (NIfTI) thành toàn bộ lát cắt axial (PNG)
+và chia theo patient thành Train / Val / Test với tỷ lệ 70/10/20.
 
 Cách chạy:
     python prepare_data.py
@@ -83,7 +83,7 @@ def process_subject(subject_id, output_dir):
     """
     Đọc 1 khối 3D, cắt thành các lát cắt 2D theo trục Z,
     lưu ảnh (image) và nhãn (mask) dưới dạng PNG.
-    Chỉ lưu các lát cắt chứa ít nhất 1 pixel nhãn dương (có tâm nhĩ trái).
+    Lưu tất cả lát cắt, kể cả những lát không có tâm nhĩ trái.
     """
     img_path = os.path.join(IMAGES_DIR, f"{subject_id}.nii.gz")
     lbl_path = os.path.join(LABELS_DIR, f"{subject_id}.nii.gz")
@@ -106,10 +106,6 @@ def process_subject(subject_id, output_dir):
     for z in range(num_slices):
         img_slice = img_data[:, :, z]
         lbl_slice = lbl_data[:, :, z]
-
-        # Chỉ giữ lại các slice có chứa vùng tâm nhĩ trái
-        if lbl_slice.max() < 1:
-            continue
 
         # Chuẩn hoá ảnh về [0, 255]
         img_norm = normalize_slice(img_slice)
@@ -149,6 +145,16 @@ def main():
         "test_2d": test_ids,
     }
 
+    # Lưu split cố định để mọi E0--E4 dùng chính xác cùng patient IDs.
+    for split_name, ids in splits.items():
+        patient_list_path = os.path.join(
+            OUTPUT_BASE, f"{split_name.replace('_2d', '')}_patients.txt"
+        )
+        os.makedirs(OUTPUT_BASE, exist_ok=True)
+        with open(patient_list_path, "w", encoding="utf-8") as f:
+            f.write("\n".join(ids) + "\n")
+        print(f"  → Đã lưu patient IDs: {patient_list_path}")
+
     # 3. Xử lý từng split
     total_stats = {}
     for split_name, ids in splits.items():
@@ -162,7 +168,7 @@ def main():
             total_slices += count
 
         total_stats[split_name] = total_slices
-        print(f"  → Tổng số lát cắt 2D (có nhãn): {total_slices}")
+        print(f"  → Tổng số lát cắt 2D (bao gồm slice mask rỗng): {total_slices}")
 
     # 4. Tổng kết
     print("\n" + "=" * 60)

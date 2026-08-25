@@ -38,7 +38,7 @@ if hasattr(sys.stderr, "reconfigure"):
 
 from dataset import get_dataloaders, IMAGENET_MEAN, IMAGENET_STD
 from model import DINOv2Segmenter
-from train import dice_score, iou_score
+from metrics import dice_score, iou_score
 
 
 # ────────────────────────────────────────────────────────────
@@ -293,18 +293,13 @@ def main(args):
         print(f"CẢNH BÁO: Không tìm thấy checkpoint tại {args.checkpoint}")
         print("Sử dụng mô hình chưa huấn luyện (chỉ để test).")
 
-    # Tự động nhận diện chế độ 2.5D từ checkpoint hoặc cờ CLI
-    is_2_5d = args.mode_2_5d or ("2_5d" in args.checkpoint)
-    mode_label = "2.5D" if is_2_5d else "2D"
-    print(f"Chế độ dữ liệu test: {mode_label}")
 
     # DataLoader
-    print(f"\nTải dữ liệu test ({mode_label})...")
+    print(f"\nTải dữ liệu test...")
     loaders = get_dataloaders(
         data_root=args.data_root,
         batch_size=args.batch_size,
         num_workers=args.num_workers,
-        mode_2_5d=is_2_5d,
     )
 
     if "test" not in loaders:
@@ -312,19 +307,15 @@ def main(args):
         return
 
     # Đánh giá
-    vis_suffix = "_2_5d" if is_2_5d else ""
-    if args.use_lcc:
-        vis_suffix += "_lcc"
-    vis_dir = os.path.join(args.save_dir, f"visualizations{vis_suffix}")
+    vis_dir = os.path.join(args.save_dir, "visualizations")
     use_lcc = args.use_lcc
-    print(f"\nHậu xử lý LCC: {'Bật' if use_lcc else 'Tắt'}")
     all_dice, all_iou = evaluate_model(
         model, loaders["test"], device, vis_dir, max_vis=args.max_vis, use_lcc=use_lcc
     )
 
     # Kết quả
     print("\n" + "=" * 60)
-    print(f"KẾT QUẢ TRÊN TẬP TEST [{mode_label}]:")
+    print(f"KẾT QUẢ TRÊN TẬP TEST:")
     print(f"  Số lượng samples: {len(all_dice)}")
     print(f"  Dice Score:")
     print(f"    Mean:   {np.mean(all_dice):.4f}")
@@ -342,7 +333,7 @@ def main(args):
     lcc_tag = "_lcc" if args.use_lcc else ""
     results = {
         "checkpoint": args.checkpoint,
-        "mode_2_5d": is_2_5d,
+        "num_samples": len(all_dice),
         "num_samples": len(all_dice),
         "use_lcc": args.use_lcc,
         "dice_mean": float(np.mean(all_dice)),
@@ -390,7 +381,5 @@ if __name__ == "__main__":
                         help="Số hình ảnh trực quan tối đa")
     parser.add_argument("--use_lcc", action="store_true", default=False,
                         help="Bật hậu xử lý Largest Connected Component")
-    parser.add_argument("--mode_2_5d", action="store_true", default=False,
-                        help="Bật chế độ đầu vào 2.5D (tự động bật nếu checkpoint chứa '2_5d')")
     args = parser.parse_args()
     main(args)
