@@ -1,145 +1,158 @@
-# 🫀 Left Atrium Segmentation với DINOv2
+# 🫀 Left Atrium Segmentation with DINOv2 ViT-Large
 
-Đồ án nghiên cứu ứng dụng mô hình nền tảng **DINOv2** (Vision Transformer) vào bài toán phân vùng tự động tâm nhĩ trái (Left Atrium) từ ảnh MRI 3D. Dự án tái hiện và mở rộng 5 kỹ thuật cải tiến từ bài báo gốc [[2411.09598]](docs/2411.09598v1.pdf).
+This repository trains a DINOv2 ViT-Large segmentation model for left-atrium MRI slices. The current, reproducible experiment scope is **E0 → E1 → E2**. GitHub `origin/main` is the only source of code; MRI data, checkpoints, logs and visualizations remain on the training server.
 
----
+The paper [DINOv2-based Left Atrium Segmentation](docs/2411.09598v1.pdf) is a protocol reference. Its reported numbers are **not** results of this repository and must not be copied into project reports.
 
-## 📊 Kết quả thực nghiệm
+## Experiment protocol
 
-| Mục | Kỹ thuật cải tiến | Vấn đề giải quyết | Val Dice | Test Dice |
-|:---:|:---|:---|:---:|:---:|
-| **1** | BCE + Dice Loss | Class Imbalance | 0.8343 | **0.7376** |
-| **2** | LoRA Fine-tuning Encoder | Domain Shift | 0.8494 | **0.7819** |
-| **3** | FPN Multi-scale Decoder | Mất chi tiết đường viền | 0.8784 | **0.8151** |
-| **4** | Hậu xử lý LCC | Đốm nhiễu rời rạc | — | 0.7311 |
-| **5** | Đầu vào 2.5D [z-1, z, z+1] | Thiếu ngữ cảnh 3D | 0.7965 | 0.7102 |
+| Phase | Encoder | Loss / method | Batch size | Purpose |
+|---|---|---|---:|---|
+| E0 | Frozen DINOv2 ViT-Large | BCE | 8 | Baseline |
+| E1 | Frozen DINOv2 ViT-Large | BCE + Dice | 8 | Address class imbalance |
+| E2 | Fully trainable DINOv2 ViT-Large | BCE + Dice | 1 | Full fine-tuning |
 
-> **FPN Multi-scale Decoder (Mục 3) đạt kết quả tốt nhất: Test Dice = 0.8151**, tăng **+10.5%** so với baseline.
+Each full phase runs for at most 50 epochs with early stopping patience 10. AMP is enabled. Each epoch replaces `last.pth`; a validation-Dice improvement creates `best.pth`; checkpoints are also saved every 5 epochs and at completion as `final.pth`. Restarting the runner resumes an unfinished phase from `last.pth`.
 
----
+Official phase reports live on the [`experiment-reports`](../../tree/experiment-reports) branch. The `EXPERIMENT_PROGRESS.md` on `main` is intentionally only a template, so source code stays separate from server artifacts.
 
-## 🗂️ Cấu trúc thư mục
+## Metrics
 
-```
+For the test set, report Dice and Jaccard/IoU as **mean ± population standard deviation over slices**, accompanied by minimum and maximum. The JSON evaluator records one Dice/IoU pair per slice. A comparison with the paper is valid only when dataset, patient split and evaluation protocol match.
+
+## Repository structure
+
+```text
 Left_atrium_segmentation/
 ├── docs/
-│   └── 2411.09598v1.pdf          # Bài báo tham khảo gốc
-│
+│   ├── 2411.09598v1.pdf
+│   └── MÔ TẢ THỰC NGHIỆM - DINOv2 FOR LEFT ATRIUM SEGMENTATION.pdf
 ├── notebooks/
-│   ├── colab_train.ipynb          # Notebook huấn luyện & đánh giá trên Google Colab
-│   └── eda.ipynb                  # Khám phá dữ liệu (EDA)
-│
+│   ├── colab_train.ipynb
+│   └── eda.ipynb
+├── scripts/
+│   ├── bootstrap_server.sh           # Create/verify the GPU environment
+│   ├── sync_server.sh                # Fast-forward code from origin/main
+│   ├── start_experiments_tmux.sh     # Start E0→E2 via tmux or screen
+│   ├── run_experiments.sh            # Sequential/resumable runner
+│   └── update_experiment_report.py   # Write the report branch
 ├── src/
-│   ├── model.py                   # Kiến trúc mô hình:
-│   │                              #   · DINOv2Segmenter (Mục 1, 4, 5)
-│   │                              #   · DINOv2FPNSegmenter (Mục 3)
-│   ├── dataset.py                 # Dataset loader 2D & 2.5D
-│   ├── evaluate.py                # Đánh giá + trực quan hóa + LCC
-│   ├── lora.py                    # Mục 2: LoRALinear + inject_lora_into_backbone
-│   ├── train.py                   # Hàm tiện ích: dice_score, iou_score, v.v.
-│   ├── train_fast.py              # Script train Mục 1, 4, 5 (AMP FP16)
-│   ├── train_lora.py              # Script train Mục 2: LoRA Fine-tuning
-│   ├── train_fpn.py               # Script train Mục 3: FPN Decoder
-│   ├── prepare_data.py            # Tiền xử lý: NIfTI 3D → lát cắt 2D PNG
-│   └── extract_features.py        # Trích xuất features (tùy chọn, tăng tốc)
-│
-├── data/                          # ⚠️ Gitignored — dữ liệu MRI gốc
-│   ├── train_2d/
-│   ├── val_2d/
-│   └── test_2d/
-│
-├── results/                       # ⚠️ Gitignored — checkpoint + kết quả
-│
+│   ├── model.py                      # DINOv2 ViT-Large segmenter
+│   ├── dataset.py                    # 2D all-slice MRI loader
+│   ├── prepare_data.py               # NIfTI → fixed patient-level splits
+│   ├── train_baseline.py             # E0/E1
+│   ├── train_full_ft.py              # E2
+│   ├── evaluate.py                   # Test metrics and visualizations
+│   ├── checkpointing.py              # Atomic/resumable checkpoints
+│   └── metrics.py
+├── EXPERIMENT_PROGRESS.md            # Template; reports are on experiment-reports
 ├── requirements.txt
 └── README.md
 ```
 
----
+The server-only directories, all excluded from Git, are:
 
-## 🧠 Các kỹ thuật cải tiến
+```text
+data/raw/Task02_Heart/                # Original NIfTI data
+data/processed/{train,val,test}/      # PNG images and masks
+data/splits/                          # Fixed patient IDs
+results/vit_large/{e0,e1,e2}/         # Full checkpoints and evaluation artifacts
+results/vit_large/smoke/{e0,e1,e2}/   # One-epoch smoke artifacts
+logs/                                 # Persistent runner logs
+```
 
-### Mục 1 — BCE + Dice Loss (Class Imbalance)
-Tâm nhĩ trái chỉ chiếm ~5% diện tích ảnh MRI. Cross-Entropy đơn thuần bị "ưu tiên" tối ưu nền đen (95%) → Giải pháp kết hợp BCE + Dice Loss.
+## Data preparation
 
-### Mục 2 — LoRA Fine-tuning (Domain Shift)
-DINOv2 pre-trained trên ImageNet (ảnh tự nhiên), đặc trưng không phù hợp với ảnh MRI. Giải pháp: inject ma trận LoRA (rank=4) vào 2 block Transformer cuối với differential learning rate (decoder: 1e-3, LoRA: 1e-5).
+Only labelled `imagesTr`/`labelsTr` volumes are used. The seed-42 patient split is 14/2/4 for train/validation/test. Every axial slice, including an empty-mask slice, is retained. `imagesTs` is unlabelled and is not used for metrics.
 
-### Mục 3 — FPN Multi-scale Decoder (Mất chi tiết đường viền)
-DINOv2 chia ảnh thành patch 14×14, decoder gốc chỉ dùng layer cuối → đường viền bị vuông vức. Giải pháp FPN:
-- Trích xuất đặc trưng từ **4 layer Transformer cuối** (lớp 9, 10, 11, 12)
-- **Top-down merge**: ngữ cảnh sâu → bổ sung cho đặc trưng nông (chi tiết cạnh)
-- Concat 4×128 = 512 channels → upsample → dự đoán mask mượt mà hơn
+Run once on the server:
 
-### Mục 4 — Hậu xử lý LCC (False Positives)
-Tâm nhĩ là một vùng liên thông duy nhất. Giữ lại Largest Connected Component và xóa bỏ các đốm nhiễu rời rạc.
+```bash
+.venv/bin/python src/prepare_data.py \
+  --raw-dir data/raw/Task02_Heart \
+  --processed-dir data/processed \
+  --splits-dir data/splits \
+  --seed 42
+```
 
-### Mục 5 — Đầu vào 2.5D (Thiếu ngữ cảnh 3D)
-Thay vì 1 lát cắt, đưa 3 lát cắt liên tiếp [z-1, z, z+1] vào 3 kênh RGB để mô hình nhận biết sự liên tục không gian 3D mà không cần 3D CNN nặng nề.
+Use `--overwrite` only when deliberately regenerating the derived `processed/` and `splits/` directories.
 
----
+## Code synchronization
 
-## 🚀 Workflow ViT-Large: local → GitHub → server
+Local is the only place to edit source code. Before pushing a change:
 
-GitHub origin/main là nguồn mã chuẩn. Chỉ sửa code tại máy local, commit/push lên GitHub; server chỉ pull fast-forward và chạy thí nghiệm. Không push trực tiếp vào server hoặc sửa code trong worktree server.
-
-### 1. Đồng bộ mã
-
-Tại local, trước khi push:
-
-~~~bash
+```bash
 git fetch origin
 git rebase origin/main
 git push origin main
-~~~
+```
 
-Trên server, trong project:
+On the server, update only a clean worktree:
 
-~~~bash
+```bash
+cd /mnt/data/users/trungptit/Left_atrium_segmentation
 bash scripts/sync_server.sh
-~~~
+```
 
-data/, results/, logs/, checkpoint .pth/.pt đều chỉ lưu trên server và bị Git ignore.
+Do not edit source code or push from the server `main` worktree. The report worktree is the sole server worktree allowed to push, and it pushes only Markdown report metadata to `experiment-reports`.
 
-### 2. Cài môi trường server (một lần)
+## Server setup
 
-~~~bash
-sudo apt update && sudo apt install -y tmux
+Run once:
+
+```bash
 cd /mnt/data/users/trungptit/Left_atrium_segmentation
 bash scripts/bootstrap_server.sh
-~~~
+```
 
-Script tạo .venv, cài PyTorch 2.11 + CUDA 12.8, kiểm tra GPU CUDA và tạo logs/, results/vit_large/e1, results/vit_large/e2.
+The script creates `.venv`, installs the CUDA-compatible dependencies, verifies CUDA/GPU access, and prepares `logs/` and `results/vit_large/{e0,e1,e2}`. `tmux` is preferred; if it is unavailable, the runner automatically uses `screen`.
 
-### 3. Smoke test qua tmux
+## Run and monitor experiments
 
-Frozen BCE+Dice (E1, batch 8):
+Run the one-epoch smoke sequence first:
 
-~~~bash
-tmux new -s la-e1
-.venv/bin/python src/train_baseline.py --model vit_large --loss bce_dice --epochs 1 --batch_size 8 --num_workers 4 --data_root data --save_dir results/vit_large/e1 2>&1 | tee logs/la-e1-smoke.log
-~~~
+```bash
+bash scripts/start_experiments_tmux.sh smoke
+```
 
-Full fine-tuning (E2, batch 1) chỉ chạy sau khi E1 thành công:
+After smoke passes, run the full sequence:
 
-~~~bash
-tmux new -s la-e2
-.venv/bin/python src/train_full_ft.py --model vit_large --epochs 1 --batch_size 1 --num_workers 4 --data_root data --save_dir results/vit_large/e2 2>&1 | tee logs/la-e2-smoke.log
-~~~
+```bash
+bash scripts/start_experiments_tmux.sh full
+```
 
-Detach tmux bằng Ctrl+B, sau đó D; quay lại bằng tmux attach -t la-e1 hoặc tmux attach -t la-e2. Nếu server không có tmux nhưng có screen, runner tự fallback sang screen; attach bằng screen -r la-e0-e2-smoke.
+The runner executes E0, evaluates and reports it, then continues with E1 and E2. If the session is interrupted, start the same command again; completed phases are skipped and an unfinished phase resumes from `last.pth`.
 
-Checkpoint ViT-Small không tương thích với ViT-Large; chỉ evaluate checkpoint được train bằng --model vit_large.
+For a tmux session:
 
-### 4. Đánh giá
+```bash
+tmux ls
+tmux attach -t la-e0-e2-full
+# Detach: Ctrl+B, then D
+```
 
-~~~bash
-.venv/bin/python src/evaluate.py --model vit_large --checkpoint results/vit_large/e1/<checkpoint>.pth --data_root data --save_dir results/vit_large/e1
-~~~
+For a screen session:
 
----
+```bash
+screen -ls
+screen -r la-e0-e2-full
+# Detach: Ctrl+A, then D
+```
 
-## 📚 Tài liệu tham khảo
+Follow the active log without attaching:
 
-- **Bài báo gốc:** [DINOv2-based Left Atrium Segmentation (arXiv:2411.09598)](https://arxiv.org/abs/2411.09598) — file PDF trong [`docs/`](docs/2411.09598v1.pdf)
-- **DINOv2:** Oquab et al., *DINOv2: Learning Robust Visual Features without Supervision*, 2023
-- **Dataset:** [Left Atrium Segmentation Challenge](http://atriaseg2018.cardiacatlas.org/)
+```bash
+tail -f logs/la-e0-e2-full.log
+```
+
+## Evaluate an existing checkpoint
+
+```bash
+.venv/bin/python src/evaluate.py \
+  --model vit_large \
+  --checkpoint results/vit_large/e2/checkpoints/best.pth \
+  --data_root data/processed \
+  --save_dir results/vit_large/e2
+```
+
+ViT-Small checkpoints are incompatible with ViT-Large and must never be used for E0, E1 or E2.

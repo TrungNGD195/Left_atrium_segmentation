@@ -45,13 +45,13 @@ run_phase() {
     fi
 
     echo "=== Starting $phase (mode=$mode) ==="
-    "$python_bin" "${command[@]}" --epochs "$epochs" --data_root data --save_dir "$result_dir" --num_workers 4 "${resume[@]}"
-    "$python_bin" src/evaluate.py --model vit_large --checkpoint "$best" --data_root data --save_dir "$result_dir" --num_workers 4
+    "$python_bin" "${command[@]}" --epochs "$epochs" --data_root data/processed --save_dir "$result_dir" --num_workers 4 "${resume[@]}"
+    "$python_bin" src/evaluate.py --model vit_large --checkpoint "$best" --data_root data/processed --save_dir "$result_dir" --num_workers 4
     "$python_bin" scripts/update_experiment_report.py --phase "$phase" --results-dir "$result_dir" --report "$reports_root/EXPERIMENT_PROGRESS.md" --commit "$(git rev-parse HEAD)"
     git -C "$reports_root" add EXPERIMENT_PROGRESS.md
     if ! git -C "$reports_root" diff --cached --quiet; then
         git -C "$reports_root" commit -m "report: $phase $mode results"
-        GIT_SSH_COMMAND="ssh -i ${GITHUB_REPORTS_KEY:-$HOME/.ssh/github_experiment_reports} -o IdentitiesOnly=yes" git -C "$reports_root" push origin experiment-reports
+        GIT_SSH_COMMAND="ssh -i ${GITHUB_REPORTS_KEY:-$HOME/.ssh/github_experiment_reports} -o IdentitiesOnly=yes" git -C "$reports_root" push --set-upstream origin experiment-reports
     fi
 }
 

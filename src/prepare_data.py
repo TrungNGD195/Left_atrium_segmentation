@@ -1,184 +1,211 @@
-"""
-prepare_data.py
----------------
-Chuyển đổi dữ liệu MRI 3D (NIfTI) thành toàn bộ lát cắt axial (PNG)
-và chia theo patient thành Train / Val / Test với tỷ lệ 70/10/20.
+"""Build the reproducible patient-level dataset required by E0--E4.
 
-Cách chạy:
-    python prepare_data.py
+Only labelled NIfTI volumes in imagesTr/ and labelsTr/ are split.  Every
+axial slice is exported, including slices whose left-atrium mask is empty, so
+test predictions can be reconstructed into complete 3D volumes.
 """
 
-import os
-import numpy as np
+from __future__ import annotations
+
+import argparse
+import json
+import random
+import shutil
+from pathlib import Path
+
 import nibabel as nib
-from sklearn.model_selection import train_test_split
+import numpy as np
 from PIL import Image
 from tqdm import tqdm
 
 
-# ────────────────────────────────────────────────────────────
-# Cấu hình đường dẫn
-# ────────────────────────────────────────────────────────────
-RAW_DIR = os.path.join("data", "raw_3d")
-IMAGES_DIR = os.path.join(RAW_DIR, "imagesTr")
-LABELS_DIR = os.path.join(RAW_DIR, "labelsTr")
-
-OUTPUT_BASE = "data"
-SPLITS = {
-    "train_2d": None,  # sẽ được gán danh sách subject sau
-    "val_2d": None,
-    "test_2d": None,
-}
-
-TRAIN_RATIO = 0.70
-VAL_RATIO = 0.10
-TEST_RATIO = 0.20
-RANDOM_SEED = 42
-
-# Kích thước đầu ra cho DINOv2 (patch_size=14, 448/14=32 patches)
-TARGET_SIZE = (448, 448)
+SPLIT_RATIOS = {"train": 0.70, "val": 0.10, "test": 0.20}
 
 
-def get_subject_ids():
-    """Lấy danh sách ID bệnh nhân từ thư mục imagesTr."""
-    files = sorted([
-        f for f in os.listdir(IMAGES_DIR)
-        if f.endswith(".nii.gz") and not f.startswith("._")
-    ])
-    # Trích xuất ID, ví dụ: "la_003.nii.gz" -> "la_003"
-    subject_ids = [f.replace(".nii.gz", "") for f in files]
-    return subject_ids
+def nifti_id(path: Path) -> str:
+    """Return the patient ID while ignoring macOS AppleDouble metadata."""
+    if path.name.startswith("._"):
+        return ""
+    if path.name.endswith(".nii.gz"):
+        return path.name[:-7]
+    if path.suffix == ".nii":
+        return path.stem
+    return ""
 
 
-def split_subjects(subject_ids):
-    """Chia danh sách bệnh nhân thành train/val/test."""
-    # Bước 1: Tách test trước (20%)
-    train_val_ids, test_ids = train_test_split(
-        subject_ids,
-        test_size=TEST_RATIO,
-        random_state=RANDOM_SEED,
-    )
-    # Bước 2: Từ phần còn lại, tách val (10% tổng = 10/80 = 12.5% phần còn lại)
-    val_relative_ratio = VAL_RATIO / (TRAIN_RATIO + VAL_RATIO)
-    train_ids, val_ids = train_test_split(
-        train_val_ids,
-        test_size=val_relative_ratio,
-        random_state=RANDOM_SEED,
-    )
-    return train_ids, val_ids, test_ids
+def indexed_volumes(directory: Path) -> dict[str, Path]:
+    if not directory.is_dir():
+        raise FileNotFoundError(f"Missing directory: {directory.resolve()}")
+    volumes: dict[str, Path] = {}
+    for path in directory.iterdir():
+        if not path.is_file():
+            continue
+        patient_id = nifti_id(path)
+        if patient_id:
+            volumes[patient_id] = path
+    return volumes
 
 
-def normalize_slice(slice_2d):
-    """Chuẩn hoá intensity về [0, 255] (uint8)."""
-    s = slice_2d.astype(np.float64)
-    s_min, s_max = s.min(), s.max()
-    if s_max - s_min > 0:
-        s = (s - s_min) / (s_max - s_min) * 255.0
-    else:
-        s = np.zeros_like(s)
-    return s.astype(np.uint8)
+def labelled_patients(raw_dir: Path) -> tuple[dict[str, Path], dict[str, Path]]:
+    images = indexed_volumes(raw_dir / "imagesTr")
+    labels = indexed_volumes(raw_dir / "labelsTr")
+    if not images:
+        raise RuntimeError(f"No labelled MRI volumes found in {raw_dir / 'imagesTr'}.")
+    if images.keys() != labels.keys():
+        only_images = sorted(images.keys() - labels.keys())
+        only_labels = sorted(labels.keys() - images.keys())
+        raise RuntimeError(
+            "imagesTr and labelsTr do not contain the same patient IDs. "
+            f"Only images: {only_images[:5]}; only labels: {only_labels[:5]}."
+        )
+    return images, labels
 
 
-def process_subject(subject_id, output_dir):
-    """
-    Đọc 1 khối 3D, cắt thành các lát cắt 2D theo trục Z,
-    lưu ảnh (image) và nhãn (mask) dưới dạng PNG.
-    Lưu tất cả lát cắt, kể cả những lát không có tâm nhĩ trái.
-    """
-    img_path = os.path.join(IMAGES_DIR, f"{subject_id}.nii.gz")
-    lbl_path = os.path.join(LABELS_DIR, f"{subject_id}.nii.gz")
+def split_patients(patient_ids: list[str], seed: int) -> dict[str, list[str]]:
+    """Create an exact 70/10/20 split when integer counts allow it."""
+    count = len(patient_ids)
+    if count < 3:
+        raise ValueError("At least three labelled patients are required.")
 
-    img_nii = nib.load(img_path)
-    lbl_nii = nib.load(lbl_path)
+    test_count = max(1, round(count * SPLIT_RATIOS["test"]))
+    val_count = max(1, round(count * SPLIT_RATIOS["val"]))
+    train_count = count - val_count - test_count
+    if train_count < 1:
+        raise ValueError(f"Cannot create a non-empty train split from {count} patients.")
 
-    img_data = img_nii.get_fdata()  # shape: (H, W, D)
-    lbl_data = lbl_nii.get_fdata()
-
-    # Tạo thư mục con cho image và mask
-    img_out = os.path.join(output_dir, "images")
-    msk_out = os.path.join(output_dir, "masks")
-    os.makedirs(img_out, exist_ok=True)
-    os.makedirs(msk_out, exist_ok=True)
-
-    num_slices = img_data.shape[2]  # chiều sâu (D)
-    saved_count = 0
-
-    for z in range(num_slices):
-        img_slice = img_data[:, :, z]
-        lbl_slice = lbl_data[:, :, z]
-
-        # Chuẩn hoá ảnh về [0, 255]
-        img_norm = normalize_slice(img_slice)
-
-        # Chuyển nhãn về nhị phân (0 hoặc 255)
-        lbl_binary = (lbl_slice > 0).astype(np.uint8) * 255
-
-        # Lưu dưới dạng PNG
-        fname = f"{subject_id}_slice{z:04d}.png"
-        Image.fromarray(img_norm).save(os.path.join(img_out, fname))
-        Image.fromarray(lbl_binary).save(os.path.join(msk_out, fname))
-        saved_count += 1
-
-    return saved_count
-
-
-def main():
-    print("=" * 60)
-    print("CHUẨN BỊ DỮ LIỆU CHO DINOv2 LEFT ATRIUM SEGMENTATION")
-    print("=" * 60)
-
-    # 1. Lấy danh sách bệnh nhân
-    subject_ids = get_subject_ids()
-    print(f"\nTổng số bệnh nhân (subjects): {len(subject_ids)}")
-    print(f"Danh sách: {subject_ids}")
-
-    # 2. Chia train/val/test
-    train_ids, val_ids, test_ids = split_subjects(subject_ids)
-    print(f"\nPhân chia dữ liệu:")
-    print(f"  Train ({len(train_ids)}): {train_ids}")
-    print(f"  Val   ({len(val_ids)}): {val_ids}")
-    print(f"  Test  ({len(test_ids)}): {test_ids}")
-
-    splits = {
-        "train_2d": train_ids,
-        "val_2d": val_ids,
-        "test_2d": test_ids,
+    shuffled = patient_ids.copy()
+    random.Random(seed).shuffle(shuffled)
+    return {
+        "train": sorted(shuffled[:train_count]),
+        "val": sorted(shuffled[train_count : train_count + val_count]),
+        "test": sorted(shuffled[train_count + val_count :]),
     }
 
-    # Lưu split cố định để mọi E0--E4 dùng chính xác cùng patient IDs.
-    for split_name, ids in splits.items():
-        patient_list_path = os.path.join(
-            OUTPUT_BASE, f"{split_name.replace('_2d', '')}_patients.txt"
+
+def normalize_volume(image: np.ndarray) -> np.ndarray:
+    """Robustly scale one MRI volume to uint8 using its non-zero intensities."""
+    image = np.asarray(image, dtype=np.float32)
+    finite = image[np.isfinite(image)]
+    if finite.size == 0:
+        raise ValueError("Volume has no finite intensity values.")
+    foreground = finite[np.abs(finite) > 1e-8]
+    reference = foreground if foreground.size else finite
+    low, high = np.percentile(reference, (1.0, 99.0))
+    if high <= low:
+        low, high = float(reference.min()), float(reference.max())
+    if high <= low:
+        return np.zeros(image.shape, dtype=np.uint8)
+    image = np.nan_to_num(image, nan=low, posinf=high, neginf=low)
+    return np.rint(np.clip((image - low) / (high - low), 0.0, 1.0) * 255.0).astype(np.uint8)
+
+
+def export_patient(
+    patient_id: str,
+    image_path: Path,
+    label_path: Path,
+    destination: Path,
+) -> dict[str, object]:
+    """Export all axial image/mask slice pairs for one patient."""
+    image_nii = nib.load(image_path)
+    label_nii = nib.load(label_path)
+    image = image_nii.get_fdata(dtype=np.float32)
+    label = label_nii.get_fdata(dtype=np.float32)
+    if image.ndim != 3 or image.shape != label.shape:
+        raise ValueError(
+            f"{patient_id}: image {image.shape} and label {label.shape} must be matching 3D arrays."
         )
-        os.makedirs(OUTPUT_BASE, exist_ok=True)
-        with open(patient_list_path, "w", encoding="utf-8") as f:
-            f.write("\n".join(ids) + "\n")
-        print(f"  → Đã lưu patient IDs: {patient_list_path}")
 
-    # 3. Xử lý từng split
-    total_stats = {}
-    for split_name, ids in splits.items():
-        output_dir = os.path.join(OUTPUT_BASE, split_name)
-        os.makedirs(output_dir, exist_ok=True)
+    image_u8 = normalize_volume(image)
+    mask_u8 = (label > 0).astype(np.uint8) * 255
+    image_dir = destination / "images"
+    mask_dir = destination / "masks"
+    image_dir.mkdir(parents=True, exist_ok=True)
+    mask_dir.mkdir(parents=True, exist_ok=True)
 
-        print(f"\n--- Xử lý tập {split_name} ---")
-        total_slices = 0
-        for sid in tqdm(ids, desc=split_name):
-            count = process_subject(sid, output_dir)
-            total_slices += count
+    for z_index in range(image.shape[2]):
+        filename = f"{patient_id}_slice{z_index:04d}.png"
+        Image.fromarray(image_u8[:, :, z_index]).save(image_dir / filename)
+        Image.fromarray(mask_u8[:, :, z_index]).save(mask_dir / filename)
 
-        total_stats[split_name] = total_slices
-        print(f"  → Tổng số lát cắt 2D (bao gồm slice mask rỗng): {total_slices}")
+    height, width, depth = image.shape
+    spacing_x, spacing_y, spacing_z = image_nii.header.get_zooms()[:3]
+    return {
+        "original_shape_hwd": [int(height), int(width), int(depth)],
+        "exported_slices": int(depth),
+        # Stacked output volumes are ordered (z, h, w); h/w are resized to 448 at load time.
+        "resampled_spacing_zhw_mm": [
+            float(spacing_z),
+            float(spacing_x * height / 448.0),
+            float(spacing_y * width / 448.0),
+        ],
+    }
 
-    # 4. Tổng kết
-    print("\n" + "=" * 60)
-    print("TỔNG KẾT:")
-    for split_name, count in total_stats.items():
-        print(f"  {split_name}: {count} slices")
-    print(f"  Tổng cộng: {sum(total_stats.values())} slices")
-    print("=" * 60)
-    print("Hoàn tất! Dữ liệu đã sẵn sàng.")
+
+def remove_if_requested(path: Path, overwrite: bool) -> None:
+    if path.exists():
+        if not overwrite:
+            raise FileExistsError(
+                f"{path.resolve()} already exists. Use --overwrite to regenerate this derived data."
+            )
+        shutil.rmtree(path)
+
+
+def main(args: argparse.Namespace) -> None:
+    raw_dir = Path(args.raw_dir)
+    processed_dir = Path(args.processed_dir)
+    splits_dir = Path(args.splits_dir)
+    images, labels = labelled_patients(raw_dir)
+    splits = split_patients(sorted(images), args.seed)
+
+    remove_if_requested(processed_dir, args.overwrite)
+    remove_if_requested(splits_dir, args.overwrite)
+    processed_dir.mkdir(parents=True, exist_ok=False)
+    splits_dir.mkdir(parents=True, exist_ok=False)
+
+    manifest: dict[str, object] = {
+        "raw_dir": str(raw_dir),
+        "seed": args.seed,
+        "split_ratio": SPLIT_RATIOS,
+        "input_size": [448, 448],
+        "labelled_patient_count": len(images),
+        "unlabelled_imagesTs_count": len(indexed_volumes(raw_dir / "imagesTs"))
+        if (raw_dir / "imagesTs").is_dir()
+        else 0,
+        "patients": {},
+    }
+
+    for split, patient_ids in splits.items():
+        (splits_dir / f"{split}_patients.txt").write_text(
+            "\n".join(patient_ids) + "\n", encoding="utf-8"
+        )
+        print(f"{split}: {len(patient_ids)} patients")
+        for patient_id in tqdm(patient_ids, desc=f"Export {split}"):
+            metadata = export_patient(
+                patient_id,
+                images[patient_id],
+                labels[patient_id],
+                processed_dir / split,
+            )
+            manifest["patients"][patient_id] = {"split": split, **metadata}
+
+    (processed_dir / "manifest.json").write_text(
+        json.dumps(manifest, indent=2), encoding="utf-8"
+    )
+    print(f"Completed. Processed slices: {processed_dir.resolve()}")
+    print(f"Fixed patient lists: {splits_dir.resolve()}")
 
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser(
+        description="Create patient-level 70/10/20 splits and export all MRI slices."
+    )
+    parser.add_argument("--raw-dir", default="data/raw/Task02_Heart")
+    parser.add_argument("--processed-dir", default="data/processed")
+    parser.add_argument("--splits-dir", default="data/splits")
+    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="Delete and regenerate only the derived processed/ and splits/ directories.",
+    )
+    main(parser.parse_args())

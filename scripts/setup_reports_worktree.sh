@@ -25,3 +25,6 @@ fi
 git -C "$reports_root" config remote.origin.pushurl "$github_ssh_url"
 git -C "$reports_root" fetch --prune origin
 git -C "$reports_root" switch experiment-reports
+if git -C "$reports_root" show-ref --verify --quiet refs/remotes/origin/experiment-reports; then
+    git -C "$reports_root" branch --set-upstream-to=origin/experiment-reports experiment-reports
+fi

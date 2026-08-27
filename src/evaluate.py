@@ -302,6 +302,7 @@ def main(args):
         data_root=args.data_root,
         batch_size=args.batch_size,
         num_workers=args.num_workers,
+        splits=("test",),
     )
 
     if "test" not in loaders:
@@ -376,7 +377,7 @@ if __name__ == "__main__":
                         help="Phiên bản DINOv2 ViT")
     parser.add_argument("--checkpoint", type=str, default="results/best_model.pth",
                         help="Đường dẫn checkpoint")
-    parser.add_argument("--data_root", type=str, default="data",
+    parser.add_argument("--data_root", type=str, default="data/processed",
                         help="Thư mục gốc dữ liệu")
     parser.add_argument("--save_dir", type=str, default="results",
                         help="Thư mục lưu kết quả")

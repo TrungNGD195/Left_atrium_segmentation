@@ -12,8 +12,8 @@ fi
 
 if ! command -v tmux >/dev/null 2>&1; then
     echo "Warning: tmux is not installed; the environment can be prepared," >&2
-    echo "but persistent training sessions cannot start yet." >&2
-    echo "Install it once with: sudo apt update && sudo apt install -y tmux" >&2
+    echo "and the runner will use screen when it is available." >&2
+    echo "Install tmux if preferred: sudo apt update && sudo apt install -y tmux" >&2
 fi
 
 cd "$repo_root"
@@ -25,7 +25,7 @@ bash scripts/sync_server.sh
     --index-url https://download.pytorch.org/whl/cu128
 "$uv_bin" pip install --python .venv/bin/python -r requirements.txt
 
-mkdir -p logs results/vit_large/e1 results/vit_large/e2
+mkdir -p logs results/vit_large/e0 results/vit_large/e1 results/vit_large/e2
 
 .venv/bin/python - <<'PY'
 import torch
