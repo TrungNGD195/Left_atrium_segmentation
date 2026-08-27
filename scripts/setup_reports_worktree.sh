@@ -15,7 +15,8 @@ export GIT_SSH_COMMAND="ssh -i $deploy_key -o IdentitiesOnly=yes"
 cd "$repo_root"
 git fetch --prune origin
 
-if [[ ! -d "$reports_root/.git" ]]; then
+# A linked worktree has a .git *file*, not a directory.
+if [[ ! -e "$reports_root/.git" ]]; then
     git worktree add -B experiment-reports "$reports_root" origin/main
 fi
 
