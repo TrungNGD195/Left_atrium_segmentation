@@ -20,6 +20,8 @@ if [[ ! -e "$reports_root/.git" ]]; then
     git worktree add -B experiment-reports "$reports_root" origin/main
 fi
 
-git -C "$reports_root" remote set-url origin "$github_ssh_url"
+# Keep fetch/pull on the read-only HTTPS remote used by the source worktree.
+# A push URL is shared across linked worktrees and is used only for reports.
+git -C "$reports_root" config remote.origin.pushurl "$github_ssh_url"
 git -C "$reports_root" fetch --prune origin
 git -C "$reports_root" switch experiment-reports
