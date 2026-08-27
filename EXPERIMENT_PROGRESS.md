@@ -20,3 +20,20 @@ Protocol follows arXiv:2411.09598: report test Dice and Jaccard/IoU as mean ± s
 
 Artifacts remain on the training server at /mnt/data/users/trungptit/Left_atrium_segmentation/results/vit_large/smoke/e0. The DINOv2 paper reports Dice and Jaccard/IoU as mean ± SD; results are not directly comparable unless data split and protocol match.
 
+## E1 — completed 2026-08-27 06:58 UTC
+
+| Field | Value |
+|---|---:|
+| Code commit | fa2970b893d1d381c6b2aa76089de26e71dc5acd |
+| Test samples | 263 |
+| Dice (mean ± SD) | 0.6280 ± 0.2819 |
+| Jaccard / IoU (mean ± SD) | 0.5103 ± 0.2592 |
+| Dice range | 0.0000 – 0.9263 |
+| IoU range | 0.0000 – 0.8628 |
+| Best validation Dice / IoU | 0.6593 / 0.5244 |
+| Peak VRAM | 1.985 GB |
+| Train time | 0.3 min |
+| Inference | 36.04 ms/slice |
+
+Artifacts remain on the training server at /mnt/data/users/trungptit/Left_atrium_segmentation/results/vit_large/smoke/e1. The DINOv2 paper reports Dice and Jaccard/IoU as mean ± SD; results are not directly comparable unless data split and protocol match.
+
