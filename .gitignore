@@ -15,6 +15,7 @@ data/
 # Results & Checkpoints
 results/
 logs/
+report/
 *.pth
 *.pt
 
