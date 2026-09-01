@@ -18,8 +18,10 @@ Cách chạy:
 import os
 import sys
 import argparse
+import csv
 import json
 import numpy as np
+import re
 import matplotlib
 matplotlib.use("Agg")  # Không cần GUI
 import matplotlib.pyplot as plt
@@ -38,7 +40,7 @@ if hasattr(sys.stderr, "reconfigure"):
 
 from dataset import get_dataloaders, IMAGENET_MEAN, IMAGENET_STD
 from model import DINOv2Segmenter
-from metrics import dice_score, iou_score
+from metrics import dice_score, iou_score, volume_metrics
 
 
 # ────────────────────────────────────────────────────────────
@@ -178,8 +180,18 @@ def apply_lcc(pred_np):
 # ────────────────────────────────────────────────────────────
 # Evaluation
 # ────────────────────────────────────────────────────────────
+SLICE_NAME = re.compile(r"^(?P<patient>.+)_slice(?P<index>\d+)\.png$")
+
+
+def patient_id_and_index(filename):
+    match = SLICE_NAME.match(filename)
+    if match is None:
+        raise ValueError(f"Cannot reconstruct volume from filename: {filename}")
+    return match.group("patient"), int(match.group("index"))
+
+
 @torch.no_grad()
-def evaluate_model(model, loader, device, vis_dir, max_vis=20, use_lcc=False):
+def evaluate_model(model, loader, device, vis_dir, max_vis=20, use_lcc=False, spacing_zhw=(1.0, 1.0, 1.0)):
     """
     Đánh giá mô hình trên toàn bộ tập dữ liệu.
 
@@ -201,6 +213,7 @@ def evaluate_model(model, loader, device, vis_dir, max_vis=20, use_lcc=False):
     all_iou  = []
     sample_metrics = []
     records = []
+    volumes = {}
 
     for images, masks, fnames in tqdm(loader, desc=f"  Evaluating{lcc_label}"):
         images = images.to(device)
@@ -226,6 +239,8 @@ def evaluate_model(model, loader, device, vis_dir, max_vis=20, use_lcc=False):
             all_dice.append(d)
             all_iou.append(j)
             sample_metrics.append({"filename": fnames[i], "dice": d, "iou": j})
+            patient_id, slice_index = patient_id_and_index(fnames[i])
+            volumes.setdefault(patient_id, []).append((slice_index, pred_np.astype(bool), mask_i.squeeze().cpu().numpy().astype(bool)))
 
             img_np = denormalize(images[i])
             img_gray = np.mean(img_np, axis=2)
@@ -262,7 +277,15 @@ def evaluate_model(model, loader, device, vis_dir, max_vis=20, use_lcc=False):
                 item["img_gray"], item["gt_np"], item["pred_np"], item["fname"], item["dice"], item["iou"], save_path
             )
 
-    return all_dice, all_iou, sample_metrics
+    patient_metrics = []
+    for patient_id, slices in sorted(volumes.items()):
+        slices.sort(key=lambda item: item[0])
+        indices = [item[0] for item in slices]
+        if indices != list(range(indices[-1] + 1)):
+            raise ValueError(f"{patient_id}: missing or duplicated slice indices")
+        metrics = volume_metrics(np.stack([item[1] for item in slices]), np.stack([item[2] for item in slices]), spacing=spacing_zhw)
+        patient_metrics.append({"patient_id": patient_id, "n_slices": len(slices), **metrics})
+    return all_dice, all_iou, sample_metrics, patient_metrics
 
 
 def main(args):
@@ -312,9 +335,22 @@ def main(args):
     # Đánh giá
     vis_dir = os.path.join(args.save_dir, "visualizations")
     use_lcc = args.use_lcc
-    all_dice, all_iou, sample_metrics = evaluate_model(
-        model, loaders["test"], device, vis_dir, max_vis=args.max_vis, use_lcc=use_lcc
+    all_dice, all_iou, sample_metrics, patient_metrics = evaluate_model(
+        model, loaders["test"], device, vis_dir, max_vis=args.max_vis, use_lcc=use_lcc,
+        spacing_zhw=tuple(args.spacing_zhw),
     )
+    valid_hd95 = [row["hd95"] for row in patient_metrics if np.isfinite(row["hd95"])]
+    volume_summary = {
+        "num_patients": len(patient_metrics),
+        "dice_3d_mean": float(np.mean([row["dice_3d"] for row in patient_metrics])),
+        "dice_3d_std": float(np.std([row["dice_3d"] for row in patient_metrics])),
+        "iou_3d_mean": float(np.mean([row["iou_3d"] for row in patient_metrics])),
+        "iou_3d_std": float(np.std([row["iou_3d"] for row in patient_metrics])),
+        "hd95_mean": float(np.mean(valid_hd95)) if valid_hd95 else float("nan"),
+        "hd95_std": float(np.std(valid_hd95)) if valid_hd95 else float("nan"),
+        "hd95_valid_patients": len(valid_hd95),
+        "spacing_zhw_mm": list(args.spacing_zhw),
+    }
 
     # Kết quả
     print("\n" + "=" * 60)
@@ -354,10 +390,17 @@ def main(args):
         "per_sample_dice": all_dice,
         "per_sample_iou": all_iou,
         "per_sample_metrics": sample_metrics,
+        "volume_3d": volume_summary,
+        "per_patient_metrics": patient_metrics,
     }
     results_path = os.path.join(args.save_dir, f"test_results_{ckpt_basename}{lcc_tag}.json")
     with open(results_path, "w", encoding="utf-8") as f:
         json.dump(results, f, indent=2)
+    patient_csv = os.path.join(args.save_dir, f"patient_metrics_{ckpt_basename}{lcc_tag}.csv")
+    with open(patient_csv, "w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=("patient_id", "n_slices", "dice_3d", "iou_3d", "hd95"))
+        writer.writeheader()
+        writer.writerows(patient_metrics)
     print(f"\n  Kết quả chi tiết: {results_path}")
 
     # Vẽ biểu đồ training history (nếu có)
@@ -389,5 +432,7 @@ if __name__ == "__main__":
                         help="Số hình ảnh trực quan tối đa")
     parser.add_argument("--use_lcc", action="store_true", default=False,
                         help="Bật hậu xử lý Largest Connected Component")
+    parser.add_argument("--spacing-zhw", type=float, nargs=3, default=(1.0, 1.0, 1.0),
+                        metavar=("Z", "H", "W"), help="Evaluation-grid voxel spacing in mm for 3D HD95")
     args = parser.parse_args()
     main(args)

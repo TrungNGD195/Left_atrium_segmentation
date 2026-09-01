@@ -25,10 +25,11 @@ fi
 bash scripts/sync_server.sh
 bash scripts/setup_reports_worktree.sh
 
+seeds=(42 2026 3407)
+
 run_phase() {
-    local phase="$1"
-    local result_dir="$2"
-    shift 2
+    local phase="$1" seed="$2" result_dir="$3"
+    shift 3
     local -a command=("$@")
     local resume=()
     local last="$result_dir/checkpoints/last.pth"
@@ -44,9 +45,9 @@ run_phase() {
         resume=(--resume "$last")
     fi
 
-    echo "=== Starting $phase (mode=$mode) ==="
-    "$python_bin" "${command[@]}" --epochs "$epochs" --data_root data/processed --save_dir "$result_dir" --num_workers 4 "${resume[@]}"
-    "$python_bin" src/evaluate.py --model vit_large --checkpoint "$best" --data_root data/processed --save_dir "$result_dir" --num_workers 4
+    echo "=== Starting $phase seed=$seed (mode=$mode) ==="
+    "$python_bin" "${command[@]}" --seed "$seed" --epochs "$epochs" --data_root data/processed --save_dir "$result_dir" --num_workers 4 "${resume[@]}"
+    "$python_bin" src/evaluate.py --model vit_large --checkpoint "$best" --data_root data/processed --save_dir "$result_dir" --num_workers 4 --spacing-zhw 1.0 1.2857142857 1.2857142857
     "$python_bin" scripts/update_experiment_report.py --phase "$phase" --results-dir "$result_dir" --report "$reports_root/EXPERIMENT_PROGRESS.md" --commit "$(git rev-parse HEAD)"
     git -C "$reports_root" add EXPERIMENT_PROGRESS.md
     if ! git -C "$reports_root" diff --cached --quiet; then
@@ -55,6 +56,8 @@ run_phase() {
     fi
 }
 
-run_phase E0 "$result_prefix/e0" src/train_baseline.py --model vit_large --loss bce --batch_size 8
-run_phase E1 "$result_prefix/e1" src/train_baseline.py --model vit_large --loss bce_dice --batch_size 8
-run_phase E2 "$result_prefix/e2" src/train_full_ft.py --model vit_large --batch_size 1
+for seed in "${seeds[@]}"; do
+    run_phase E0 "$seed" "$result_prefix/e0/seed_$seed" src/train_baseline.py --model vit_large --loss bce --batch_size 8
+    run_phase E1 "$seed" "$result_prefix/e1/seed_$seed" src/train_baseline.py --model vit_large --loss bce_dice --batch_size 8
+    run_phase E2 "$seed" "$result_prefix/e2/seed_$seed" src/train_full_ft.py --model vit_large --batch_size 1
+done

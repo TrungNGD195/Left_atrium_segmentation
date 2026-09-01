@@ -25,6 +25,7 @@ def main() -> None:
 
     test = json.loads(latest_json(args.results_dir, "test_results_*.json").read_text(encoding="utf-8"))
     efficiency = json.loads(latest_json(args.results_dir, "efficiency_*.json").read_text(encoding="utf-8"))
+    volume = test["volume_3d"]
     timestamp = datetime.now(UTC).strftime("%Y-%m-%d %H:%M UTC")
     elapsed_minutes = efficiency["total_train_time_s"] / 60
 
@@ -33,7 +34,12 @@ def main() -> None:
 | Field | Value |
 |---|---:|
 | Code commit | {args.commit} |
+| Seed | {efficiency["seed"]} |
 | Test samples | {test["num_samples"]} |
+| Test patients | {volume["num_patients"]} |
+| 3D Dice (mean Â± SD) | {volume["dice_3d_mean"]:.4f} Â± {volume["dice_3d_std"]:.4f} |
+| 3D IoU (mean Â± SD) | {volume["iou_3d_mean"]:.4f} Â± {volume["iou_3d_std"]:.4f} |
+| HD95 mm (mean Â± SD) | {volume["hd95_mean"]:.4f} Â± {volume["hd95_std"]:.4f} |
 | Dice (mean ± SD) | {test["dice_mean"]:.4f} ± {test["dice_std"]:.4f} |
 | Jaccard / IoU (mean ± SD) | {test["iou_mean"]:.4f} ± {test["iou_std"]:.4f} |
 | Dice range | {test["dice_min"]:.4f} – {test["dice_max"]:.4f} |

@@ -39,7 +39,7 @@ Left_atrium_segmentation/
 ├── src/
 │   ├── model.py                      # DINOv2 ViT-Large segmenter
 │   ├── dataset.py                    # 2D all-slice MRI loader
-│   ├── prepare_data.py               # NIfTI → fixed patient-level splits
+│   ├── prepare_data.py               # NIfTI/UTAH NRRD → fixed patient-level splits
 │   ├── train_baseline.py             # E0/E1
 │   ├── train_full_ft.py              # E2
 │   ├── evaluate.py                   # Test metrics and visualizations
@@ -53,7 +53,7 @@ Left_atrium_segmentation/
 The server-only directories, all excluded from Git, are:
 
 ```text
-data/raw/Task02_Heart/                # Original NIfTI data
+data/{Training Set,Testing Set}/       # Raw UTAH 2018 NRRD dataset (local/server only)
 data/processed/{train,val,test}/      # PNG images and masks
 data/splits/                          # Fixed patient IDs
 results/vit_large/{e0,e1,e2}/         # Full checkpoints and evaluation artifacts
@@ -63,19 +63,22 @@ logs/                                 # Persistent runner logs
 
 ## Data preparation
 
-Only labelled `imagesTr`/`labelsTr` volumes are used. The seed-42 patient split is 14/2/4 for train/validation/test. Every axial slice, including an empty-mask slice, is retained. `imagesTs` is unlabelled and is not used for metrics.
+The current dataset is **2018 UTAH MICCAI**. All 154 labelled patients are pooled from its `Training Set` (100) and `Testing Set` (54), then split once at the patient level with seed 42 into **108/15/31** train/validation/test patients. `lgemri.nrrd` is the MRI input and `laendo.nrrd > 0` is the left-atrium cavity mask. `lawall.nrrd` is not used by this cavity-segmentation experiment.
+
+Every axial slice, including an empty-mask slice, is retained. The manifest records each patient's original source folder, volume shape and spacing so the split remains auditable. Do not compare metrics from this pooled split directly with results using an official UTAH train/test protocol.
 
 Run once on the server:
 
 ```bash
 .venv/bin/python src/prepare_data.py \
-  --raw-dir data/raw/Task02_Heart \
+  --raw-dir data \
   --processed-dir data/processed \
   --splits-dir data/splits \
-  --seed 42
+  --seed 42 \
+  --overwrite
 ```
 
-Use `--overwrite` only when deliberately regenerating the derived `processed/` and `splits/` directories.
+First validate the layout without changing files with `--dry-run`. `--overwrite` deliberately replaces **only** the derived `data/processed/` and `data/splits/` directories; it never removes raw datasets.
 
 ## Code synchronization
 
