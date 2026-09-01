@@ -42,7 +42,10 @@ def train_one_epoch(model, loader, criterion, optimizer, scaler, device):
     for images, masks, _ in tqdm(loader, desc="  Train", leave=False):
         images = images.to(device, non_blocking=True)
         masks  = masks.to(device, non_blocking=True)
-        optimizer.zero_grad()
+        # Avoid an unnecessary zero-fill of every gradient buffer.  This has
+        # the same optimizer semantics as zero_grad(), while reducing per-step
+        # overhead for the fully trainable ViT-Large encoder.
+        optimizer.zero_grad(set_to_none=True)
         with torch.cuda.amp.autocast(enabled=(device.type == "cuda")):
             logits = model(images)
             loss   = criterion(logits, masks)
