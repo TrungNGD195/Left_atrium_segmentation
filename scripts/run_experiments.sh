@@ -26,15 +26,22 @@ bash scripts/sync_server.sh
 bash scripts/setup_reports_worktree.sh
 
 seeds=(42 2026 3407)
-# Batch size is not prescribed by the experiment specification.  Batch 2 is
-# deliberately conservative for ViT-Large/448 on the RTX 4090; override it
-# only after a clean smoke test, e.g. E2_BATCH_SIZE=1 for the safest fallback.
-e2_batch_size="${E2_BATCH_SIZE:-2}"
+# Batch size is not prescribed by the experiment specification. Batch 4 and
+# torch.compile are used only after their dedicated smoke test on the RTX 4090.
+# E2_BATCH_SIZE=1 and E2_COMPILE=0 remain OOM-safe fallbacks.
+e2_batch_size="${E2_BATCH_SIZE:-4}"
 if ! [[ "$e2_batch_size" =~ ^[1-9][0-9]*$ ]]; then
     echo "E2_BATCH_SIZE must be a positive integer; got '$e2_batch_size'." >&2
     exit 2
 fi
-echo "E2 configuration: batch_size=$e2_batch_size, AMP=on, encoder_lr=1e-5, decoder_lr=1e-3"
+e2_compile="${E2_COMPILE:-1}"
+e2_compile_args=()
+case "$e2_compile" in
+    1|true|TRUE|yes|YES) e2_compile_args=(--compile --compile_mode reduce-overhead) ;;
+    0|false|FALSE|no|NO) ;;
+    *) echo "E2_COMPILE must be 0 or 1; got '$e2_compile'." >&2; exit 2 ;;
+esac
+echo "E2 configuration: batch_size=$e2_batch_size, compile=$e2_compile, AMP=on, encoder_lr=1e-5, decoder_lr=1e-3"
 
 run_phase() {
     local phase="$1" seed="$2" result_dir="$3"
@@ -68,5 +75,5 @@ run_phase() {
 for seed in "${seeds[@]}"; do
     run_phase E0 "$seed" "$result_prefix/e0/seed_$seed" src/train_baseline.py --model vit_large --loss bce --batch_size 8
     run_phase E1 "$seed" "$result_prefix/e1/seed_$seed" src/train_baseline.py --model vit_large --loss bce_dice --batch_size 8
-    run_phase E2 "$seed" "$result_prefix/e2/seed_$seed" src/train_full_ft.py --model vit_large --batch_size "$e2_batch_size"
+    run_phase E2 "$seed" "$result_prefix/e2/seed_$seed" src/train_full_ft.py --model vit_large --batch_size "$e2_batch_size" "${e2_compile_args[@]}"
 done

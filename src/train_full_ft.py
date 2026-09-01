@@ -35,6 +35,16 @@ def set_seed(seed: int):
         torch.cuda.manual_seed_all(seed)
 
 
+def checkpoint_model(model: nn.Module) -> nn.Module:
+    """Return the original module when torch.compile wraps it.
+
+    Checkpoints remain loadable by the ordinary evaluator, and a resumed
+    compiled run therefore uses the same checkpoint format as an uncompiled
+    one.
+    """
+    return getattr(model, "_orig_mod", model)
+
+
 def train_one_epoch(model, loader, criterion, optimizer, scaler, device):
     model.train()
     total_loss = total_dice = total_iou = 0.0
@@ -115,6 +125,11 @@ def main(args):
     ])
     criterion = DiceBCELoss(bce_weight=0.5, dice_weight=0.5)
     scaler    = torch.cuda.amp.GradScaler(enabled=(device.type == "cuda"))
+    if args.compile:
+        if device.type != "cuda":
+            raise RuntimeError("--compile requires CUDA.")
+        print(f"Compiling model with torch.compile(mode={args.compile_mode})")
+        model = torch.compile(model, mode=args.compile_mode)
 
     # ── Training loop ─────────────────────────────────────────
     os.makedirs(args.save_dir, exist_ok=True)
@@ -135,7 +150,7 @@ def main(args):
 
     if args.resume:
         resume_checkpoint = torch.load(args.resume, map_location=device, weights_only=False)
-        model.load_state_dict(resume_checkpoint["model_state_dict"])
+        checkpoint_model(model).load_state_dict(resume_checkpoint["model_state_dict"])
         optimizer.load_state_dict(resume_checkpoint["optimizer_state_dict"])
         scaler.load_state_dict(resume_checkpoint["scaler_state_dict"])
         best_val_dice = resume_checkpoint["best_val_dice"]
@@ -183,7 +198,7 @@ def main(args):
 
         checkpoint = {
             "epoch": epoch,
-            "model_state_dict": model.state_dict(),
+            "model_state_dict": checkpoint_model(model).state_dict(),
             "optimizer_state_dict": optimizer.state_dict(),
             "scaler_state_dict": scaler.state_dict(),
             "best_val_dice": best_val_dice,
@@ -237,6 +252,8 @@ def main(args):
         "seed": args.seed,
         "batch_size": args.batch_size,
         "num_workers": args.num_workers,
+        "torch_compile": args.compile,
+        "torch_compile_mode": args.compile_mode if args.compile else None,
         "total_params": total_params,
         "trainable_params": trainable_params,
         "trainable_ratio": round(trainable_params / total_params * 100, 2),
@@ -276,6 +293,10 @@ if __name__ == "__main__":
     parser.add_argument("--lr_decoder",  type=float, default=1e-3)
     parser.add_argument("--patience",    type=int,   default=10)
     parser.add_argument("--num_workers", type=int,   default=0)
+    parser.add_argument("--compile", action="store_true",
+                        help="Use torch.compile; checkpoints stay evaluator-compatible.")
+    parser.add_argument("--compile_mode", default="reduce-overhead",
+                        choices=("default", "reduce-overhead", "max-autotune"))
     parser.add_argument("--seed",        type=int,   default=42)
     parser.add_argument("--resume",      type=str,   default=None,
                         help="Path to a resumable last/epoch checkpoint")

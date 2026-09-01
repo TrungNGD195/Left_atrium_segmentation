@@ -10,9 +10,9 @@ The paper [DINOv2-based Left Atrium Segmentation](docs/2411.09598v1.pdf) is a pr
 |---|---|---|---:|---|
 | E0 | Frozen DINOv2 ViT-Large | BCE | 8 | Baseline |
 | E1 | Frozen DINOv2 ViT-Large | BCE + Dice | 8 | Address class imbalance |
-| E2 | Fully trainable DINOv2 ViT-Large | BCE + Dice | 2 | Full fine-tuning |
+| E2 | Fully trainable DINOv2 ViT-Large | BCE + Dice | 4 | Full fine-tuning |
 
-Each full phase runs for at most 50 epochs with early stopping patience 10. AMP is enabled. The protocol PDF does not prescribe batch size; E2 uses batch 2 after a dedicated VRAM smoke test on the RTX 4090, with `E2_BATCH_SIZE=1` retained as an OOM-safe fallback. Each epoch replaces `last.pth`; a validation-Dice improvement creates `best.pth`; checkpoints are also saved every 5 epochs and at completion as `final.pth`. Restarting the runner resumes an unfinished phase from `last.pth`.
+Each full phase runs for at most 50 epochs with early stopping patience 10. AMP is enabled. The protocol PDF does not prescribe batch size; E2 uses batch 4 plus `torch.compile(mode="reduce-overhead")` only after a dedicated RTX 4090 smoke test, with `E2_BATCH_SIZE=1 E2_COMPILE=0` retained as an OOM-safe fallback. These execution optimizations do not change the model, loss, learning rates, seeds, patient split, model-selection rule or 3D evaluation protocol. Each epoch replaces `last.pth`; a validation-Dice improvement creates `best.pth`; checkpoints are also saved every 5 epochs and at completion as `final.pth`. Restarting the runner resumes an unfinished phase from `last.pth`.
 
 Official phase reports live on the [`experiment-reports`](../../tree/experiment-reports) branch. The `EXPERIMENT_PROGRESS.md` on `main` is intentionally only a template, so source code stays separate from server artifacts.
 
