@@ -21,10 +21,12 @@ def main() -> None:
     parser.add_argument("--results-dir", type=Path, required=True)
     parser.add_argument("--report", type=Path, required=True)
     parser.add_argument("--commit", required=True)
+    parser.add_argument("--data-manifest", type=Path, required=True)
     args = parser.parse_args()
 
     test = json.loads(latest_json(args.results_dir, "test_results_*.json").read_text(encoding="utf-8"))
     efficiency = json.loads(latest_json(args.results_dir, "efficiency_*.json").read_text(encoding="utf-8"))
+    manifest = json.loads(args.data_manifest.read_text(encoding="utf-8"))
     volume = test["volume_3d"]
     timestamp = datetime.now(UTC).strftime("%Y-%m-%d %H:%M UTC")
     elapsed_minutes = efficiency["total_train_time_s"] / 60
@@ -34,6 +36,8 @@ def main() -> None:
 | Field | Value |
 |---|---:|
 | Code commit | {args.commit} |
+| Patient split seed | {manifest["split_seed"]} |
+| Patient split (train/val/test) | {manifest["split_counts"]["train"]}/{manifest["split_counts"]["val"]}/{manifest["split_counts"]["test"]} |
 | Seed | {efficiency["seed"]} |
 | Batch size | {efficiency.get("batch_size", "not recorded")} |
 | DataLoader workers | {efficiency.get("num_workers", "not recorded")} |

@@ -63,7 +63,7 @@ logs/                                 # Persistent runner logs
 
 ## Data preparation
 
-The current dataset is **2018 UTAH MICCAI**. All 154 labelled patients are pooled from its `Training Set` (100) and `Testing Set` (54), then split once at the patient level with seed 42 into **108/15/31** train/validation/test patients. `lgemri.nrrd` is the MRI input and `laendo.nrrd > 0` is the left-atrium cavity mask. `lawall.nrrd` is not used by this cavity-segmentation experiment.
+The current dataset is **2018 UTAH MICCAI**. All 154 labelled patients are pooled from its `Training Set` (100) and `Testing Set` (54), then split once at the patient level with seed 2024 into **108/15/31** train/validation/test patients. `lgemri.nrrd` is the MRI input and `laendo.nrrd > 0` is the left-atrium cavity mask. `lawall.nrrd` is not used by this cavity-segmentation experiment.
 
 Every axial slice, including an empty-mask slice, is retained. The manifest records each patient's original source folder, volume shape and spacing so the split remains auditable. Do not compare metrics from this pooled split directly with results using an official UTAH train/test protocol.
 

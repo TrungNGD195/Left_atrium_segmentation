@@ -64,7 +64,7 @@ run_phase() {
     echo "=== Starting $phase seed=$seed (mode=$mode) ==="
     "$python_bin" "${command[@]}" --seed "$seed" --epochs "$epochs" --data_root data/processed --save_dir "$result_dir" --num_workers 4 "${resume[@]}"
     "$python_bin" src/evaluate.py --model vit_large --checkpoint "$best" --data_root data/processed --save_dir "$result_dir" --num_workers 4 --spacing-zhw 1.0 1.2857142857 1.2857142857
-    "$python_bin" scripts/update_experiment_report.py --phase "$phase" --results-dir "$result_dir" --report "$reports_root/EXPERIMENT_PROGRESS.md" --commit "$(git rev-parse HEAD)"
+    "$python_bin" scripts/update_experiment_report.py --phase "$phase" --results-dir "$result_dir" --report "$reports_root/EXPERIMENT_PROGRESS.md" --commit "$(git rev-parse HEAD)" --data-manifest data/data_manifest.json
     git -C "$reports_root" add EXPERIMENT_PROGRESS.md
     if ! git -C "$reports_root" diff --cached --quiet; then
         git -C "$reports_root" commit -m "report: $phase $mode results"
