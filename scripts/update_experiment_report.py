@@ -35,6 +35,8 @@ def main() -> None:
 |---|---:|
 | Code commit | {args.commit} |
 | Seed | {efficiency["seed"]} |
+| Batch size | {efficiency.get("batch_size", "not recorded")} |
+| DataLoader workers | {efficiency.get("num_workers", "not recorded")} |
 | Test samples | {test["num_samples"]} |
 | Test patients | {volume["num_patients"]} |
 | 3D Dice (mean Â± SD) | {volume["dice_3d_mean"]:.4f} Â± {volume["dice_3d_std"]:.4f} |

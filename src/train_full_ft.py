@@ -235,6 +235,8 @@ def main(args):
     efficiency = {
         "method": "E2_FullFT",
         "seed": args.seed,
+        "batch_size": args.batch_size,
+        "num_workers": args.num_workers,
         "total_params": total_params,
         "trainable_params": trainable_params,
         "trainable_ratio": round(trainable_params / total_params * 100, 2),
