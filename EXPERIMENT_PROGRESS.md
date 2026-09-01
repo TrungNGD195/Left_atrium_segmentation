@@ -127,3 +127,25 @@ Artifacts remain on the training server at /mnt/data/users/trungptit/Left_atrium
 
 Artifacts remain on the training server at /mnt/data/users/trungptit/Left_atrium_segmentation/results/vit_large/e0/seed_42. The DINOv2 paper reports Dice and Jaccard/IoU as mean ± SD; results are not directly comparable unless data split and protocol match.
 
+## E1 — completed 2026-09-01 05:20 UTC
+
+| Field | Value |
+|---|---:|
+| Code commit | c2d685cd96a032b82adcd317e96e336da393534c |
+| Seed | 42 |
+| Test samples | 2728 |
+| Test patients | 31 |
+| 3D Dice (mean Â± SD) | 0.8422 Â± 0.0384 |
+| 3D IoU (mean Â± SD) | 0.7292 Â± 0.0556 |
+| HD95 mm (mean Â± SD) | 8.3310 Â± 3.4516 |
+| Dice (mean ± SD) | 0.7601 ± 0.2996 |
+| Jaccard / IoU (mean ± SD) | 0.6850 ± 0.3042 |
+| Dice range | 0.0000 – 1.0000 |
+| IoU range | 0.0000 – 1.0000 |
+| Best validation Dice / IoU | 0.6795 / 0.5910 |
+| Peak VRAM | 1.985 GB |
+| Train time | 98.4 min |
+| Inference | 36.30 ms/slice |
+
+Artifacts remain on the training server at /mnt/data/users/trungptit/Left_atrium_segmentation/results/vit_large/e1/seed_42. The DINOv2 paper reports Dice and Jaccard/IoU as mean ± SD; results are not directly comparable unless data split and protocol match.
+
